@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SaveMe — Your Saved Places</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.png">
+<meta name="theme-color" content="#4f8cff">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e8eaed;
+    --muted: #9aa0ac;
+    --accent: #4f8cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  #app { display: flex; height: 100vh; }
+  #sidebar {
+    width: 320px; min-width: 320px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
+  #sidebar-header h1 { font-size: 18px; margin: 0 0 4px 0; }
+  #sidebar-header p { font-size: 12px; color: var(--muted); margin: 0; }
+  #search-box {
+    margin: 12px 16px 0 16px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: #10131a; color: var(--text); font-size: 13px;
+  }
+  #chat-panel { margin: 12px 16px 0 16px; border: 1px solid var(--border); border-radius: 10px; background: #10131a; overflow: hidden; }
+  #chat-panel.collapsed #chat-body { display: none; }
+  #chat-header {
+    display: flex; align-items: center; justify-content: space-between; padding: 8px 10px;
+    cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text);
+  }
+  #chat-header .hint { font-weight: 400; color: var(--muted); font-size: 11px; }
+  #chat-body { padding: 0 10px 10px 10px; }
+  #chat-form { display: flex; gap: 6px; }
+  #chat-input {
+    flex: 1; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--border);
+    background: #0b0d12; color: var(--text); font-size: 12px;
+  }
+  #chat-send {
+    padding: 7px 12px; border-radius: 6px; border: none; background: var(--accent); color: #fff;
+    font-size: 12px; cursor: pointer; font-weight: 600;
+  }
+  #chat-send:disabled { opacity: 0.5; cursor: default; }
+  #chat-answer {
+    margin-top: 8px; font-size: 12px; line-height: 1.5; color: var(--text);
+    max-height: 220px; overflow-y: auto; white-space: pre-wrap;
+  }
+  #chat-answer.empty { color: var(--muted); font-style: italic; }
+  #chat-clear {
+    margin-top: 6px; font-size: 11px; color: var(--accent); cursor: pointer; text-decoration: underline;
+    display: none;
+  }
+  #category-filters { padding: 12px 16px; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--border); }
+  .cat-chip {
+    font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    cursor: pointer; user-select: none; color: var(--muted); background: #10131a;
+  }
+  .cat-chip.active { color: #fff; border-color: var(--accent); background: var(--accent); }
+  #stats { padding: 8px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  #place-list { flex: 1; overflow-y: auto; }
+  .place-card {
+    padding: 10px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s;
+  }
+  .place-card:hover { background: #1f232d; }
+  .place-card.selected { background: #232a3a; }
+  .place-card .name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .place-card .meta { font-size: 11px; color: var(--muted); }
+  .place-card .tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .tag-pill { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #2a2e38; color: var(--muted); }
+  #map { flex: 1; }
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); }
+  .leaflet-popup-tip { background: var(--panel); }
+  .popup-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  .popup-addr { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .popup-tags { margin-bottom: 6px; }
+  .popup-link { font-size: 12px; color: var(--accent); text-decoration: none; }
+  .popup-rating { font-size: 12px; color: #f5c518; }
+  .popup-nearby { margin-top: 8px; }
+  .nearby-btn { font-size: 11px; background: #232a3a; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+  .nearby-btn:hover { background: #2a2e38; }
+  .nearby-section { margin-top: 6px; }
+  .nearby-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 3px; }
+  .nearby-item { font-size: 12px; padding: 2px 0; cursor: pointer; }
+  .nearby-item a { color: var(--accent); text-decoration: none; }
+  .nearby-dist { color: var(--muted); font-size: 11px; }
+  .nearby-error, .nearby-empty { font-size: 11px; color: var(--muted); font-style: italic; }
+  #chat-nearby { margin-top: 8px; font-size: 12px; }
+  #chat-nearby .nearby-title { margin-top: 4px; }
+  #sheet-handle { display: none; }
+  #chat-fab { display: none; }
+  #chat-close { display: none; }
+
+  @media (max-width: 768px) {
+    #app { display: block; height: 100vh; position: relative; overflow: hidden; }
+    #map { position: absolute; inset: 0; height: 100%; }
+    #sidebar {
+      position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: 100%; min-width: 0;
+      height: 128px; max-height: 75vh; border-right: none; border-top: 1px solid var(--border);
+      border-radius: 16px 16px 0 0; z-index: 900; transition: height 0.25s ease;
+      box-shadow: 0 -6px 24px rgba(0,0,0,0.45);
+    }
+    #sidebar.expanded { height: 75vh; }
+    #sidebar-header { display: none; }
+    #sheet-handle { display: flex; justify-content: center; padding: 8px 0 4px 0; cursor: pointer; }
+    #sheet-handle span { width: 36px; height: 4px; border-radius: 999px; background: var(--border); }
+    #search-box { margin-top: 0; }
+    #chat-panel { display: none; }
+    #category-filters, #stats, #place-list { display: none; }
+    #sidebar.expanded #category-filters,
+    #sidebar.expanded #stats,
+    #sidebar.expanded #place-list { display: block; }
+    #sidebar.expanded #category-filters { display: flex; }
+
+    #chat-fab {
+      display: flex; align-items: center; justify-content: center; position: fixed;
+      right: 16px; bottom: 24px; width: 54px; height: 54px; border-radius: 50%;
+      background: var(--accent); color: #fff; font-size: 22px; border: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5); z-index: 950; cursor: pointer;
+    }
+    body.chat-modal-active #chat-fab { display: none; }
+    #chat-panel.modal-open {
+      display: flex; flex-direction: column; position: fixed; inset: 0; z-index: 2000;
+      margin: 0; border-radius: 0; border: none; background: var(--panel);
+    }
+    #chat-panel.modal-open #chat-header { padding: 16px; border-bottom: 1px solid var(--border); cursor: default; position: relative; }
+    #chat-panel.modal-open #chat-body { display: block; flex: 1; overflow-y: auto; padding: 16px; }
+    #chat-panel.modal-open #chat-answer { max-height: none; }
+    #chat-close {
+      display: inline-flex; position: absolute; right: 12px; top: 10px; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%; border: none; background: #2a2e38; color: var(--text);
+      font-size: 14px; cursor: pointer;
+    }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <h1>📍 SaveMe</h1>
+      <p>Your saved places, mapped</p>
+      <button id="install-btn" style="display:none; width:100%; margin-top:8px; padding:10px; border-radius:8px; border:none; background:#4f8cff; color:#fff; font-size:14px; font-weight:600; cursor:pointer;">⬇ Install App</button>
+      <p id="install-hint" style="display:none; font-size:11px; color:#9aa0ac; margin:6px 0 0 0;">Already installed or not on a supported browser? Open the ⋮ menu → "Add to Home screen".</p>
+      <a href="/review" id="review-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:8px; text-decoration:none;">🔍 Needs review<span id="review-count"></span></a>
+      <a href="/import" id="import-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:4px; text-decoration:none;">📥 Import from Instagram</a>
+      <a href="/api/logout" id="logout-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:4px; text-decoration:none;">Log out</a>
+    </div>
+    <div id="sheet-handle" onclick="toggleSheet()"><span></span></div>
+    <input id="search-box" type="text" placeholder="Search name, tag, address..." />
+    <div id="chat-panel">
+      <div id="chat-header" onclick="toggleChat()">
+        <span>💬 Ask SaveMe <span class="hint">(e.g. "where should I eat tonight?")</span></span>
+        <span id="chat-toggle-icon">▾</span>
+        <button id="chat-close" onclick="event.stopPropagation(); closeChatModal();">✕</button>
+      </div>
+      <div id="chat-body">
+        <form id="chat-form">
+          <input id="chat-input" type="text" placeholder="Ask about your saved places..." autocomplete="off" />
+          <button id="chat-send" type="submit">Ask</button>
+        </form>
+        <div id="chat-answer" class="empty">Ask a question and I'll search your saved places and answer using only what you've actually saved.</div>
+        <div id="chat-nearby"></div>
+        <div id="chat-clear" onclick="clearChat()">Clear search &amp; show all places</div>
+      </div>
+    </div>
+    <div id="category-filters"></div>
+    <div id="stats"></div>
+    <div id="place-list"></div>
+  </div>
+  <div id="map"></div>
+  <button id="chat-fab" onclick="openChatModal()">💬</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+const CATEGORY_COLORS = {
+  restaurant: "#ff6b6b",
+  cafe: "#ffa94d",
+  travel_destination: "#4f8cff",
+  real_estate: "#9775fa",
+  shopping: "#f783ac",
+  nature: "#51cf66",
+  activity: "#22b8cf",
+  other: "#adb5bd",
+};
+
+let map, markersLayer, allPlaces = [], markerById = {};
+let activeCategories = new Set();
+let selectedCardEl = null;
+let chatResults = null; // null = no active chat search; array = active chat candidate list
+
+function categoryColor(cat) {
+  return CATEGORY_COLORS[cat] || CATEGORY_COLORS.other;
+}
+
+function makeIcon(cat) {
+  const color = categoryColor(cat);
+  return L.divIcon({
+    className: "",
+    html: `<div style="background:${color};width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
+}
+
+function popupHtml(p) {
+  const tags = (p.tags || []).map(t => `<span class="tag-pill">${t}</span>`).join(" ");
+  const rating = p.rating ? `<span class="popup-rating">★ ${p.rating.toFixed(1)} (${p.user_ratings_total || 0})</span>` : "";
+  return `
+    <div class="popup-name">${p.name}</div>
+    <div class="popup-addr">${p.address || ""}</div>
+    <div class="popup-tags">${tags}</div>
+    <div>${rating}</div>
+    ${p.source_url ? `<a class="popup-link" href="${p.source_url}" target="_blank">View original post ↗</a>` : ""}
+    <div class="popup-nearby" id="nearby-${p.id}">
+      <button class="nearby-btn" onclick="loadNearby(${p.id})">🧭 Show nearby places</button>
+    </div>
+  `;
+}
+
+async function loadNearby(placeId) {
+  const container = document.getElementById(`nearby-${placeId}`);
+  if (!container) return;
+  container.innerHTML = `<span class="nearby-empty">Loading nearby places...</span>`;
+  try {
+    const res = await fetch(`/api/nearby?place_id=${placeId}`);
+    if (res.status === 401) { window.location.href = "/login"; return; }
+    const data = await res.json();
+    if (!res.ok) {
+      container.innerHTML = `<span class="nearby-error">${data.error || "Could not load nearby places"}</span>`;
+      return;
+    }
+    container.innerHTML = renderNearbyHtml(data);
+  } catch (err) {
+    container.innerHTML = `<span class="nearby-error">Could not load nearby places.</span>`;
+  }
+}
+
+function renderNearbyHtml(data) {
+  let html = "";
+  if (data.saved_nearby && data.saved_nearby.length) {
+    html += `<div class="nearby-section"><div class="nearby-title">Your other saved places nearby</div>`;
+    data.saved_nearby.forEach(p => {
+      html += `<div class="nearby-item" onclick="focusPlace(${p.id})">${p.name} <span class="nearby-dist">(${p.distance_km}km)</span></div>`;
+    });
+    html += `</div>`;
+  }
+  if (data.discover_nearby && data.discover_nearby.length) {
+    html += `<div class="nearby-section"><div class="nearby-title">Discover nearby</div>`;
+    data.discover_nearby.forEach(p => {
+      const rating = p.rating ? ` ★${Number(p.rating).toFixed(1)}` : "";
+      html += `<div class="nearby-item"><a href="${p.maps_url || "#"}" target="_blank">${p.name}</a>${rating}</div>`;
+    });
+    html += `</div>`;
+  }
+  if (!html) html = `<span class="nearby-empty">No nearby recommendations found.</span>`;
+  return html;
+}
+
+function focusPlace(id) {
+  const p = allPlaces.find(pl => pl.id === id);
+  if (!p) return;
+  map.setView([p.lat, p.lng], 15);
+  const marker = markerById[id];
+  if (marker) marker.openPopup();
+  highlightCard(id);
+  collapseSheetOnMobile();
+}
+
+function renderCategoryChips() {
+  const container = document.getElementById("category-filters");
+  const cats = [...new Set(allPlaces.map(p => p.category))].sort();
+  container.innerHTML = "";
+  cats.forEach(cat => {
+    const chip = document.createElement("div");
+    chip.className = "cat-chip active";
+    chip.textContent = `${cat.replace(/_/g, " ")} (${allPlaces.filter(p => p.category === cat).length})`;
+    chip.dataset.cat = cat;
+    chip.style.borderColor = categoryColor(cat);
+    chip.addEventListener("click", () => {
+      if (activeCategories.has(cat)) {
+        activeCategories.delete(cat);
+        chip.classList.remove("active");
+      } else {
+        activeCategories.add(cat);
+        chip.classList.add("active");
+      }
+      applyFilters();
+    });
+    activeCategories.add(cat);
+    container.appendChild(chip);
+  });
+}
+
+function applyFilters() {
+  if (chatResults) {
+    // A chat search is active -- it takes over the map/list view until cleared.
+    renderMarkers(chatResults);
+    renderList(chatResults);
+    document.getElementById("stats").textContent = `${chatResults.length} places matched your question`;
+    return;
+  }
+  const searchTerm = document.getElementById("search-box").value.trim().toLowerCase();
+  const filtered = allPlaces.filter(p => {
+    if (!activeCategories.has(p.category)) return false;
+    if (!searchTerm) return true;
+    const haystack = [p.name, p.address, p.collection_name, ...(p.tags || [])].join(" ").toLowerCase();
+    return haystack.includes(searchTerm);
+  });
+  renderMarkers(filtered);
+  renderList(filtered);
+  document.getElementById("stats").textContent = `${filtered.length} of ${allPlaces.length} places shown`;
+}
+
+function renderMarkers(places) {
+  markersLayer.clearLayers();
+  markerById = {};
+  places.forEach(p => {
+    const marker = L.marker([p.lat, p.lng], { icon: makeIcon(p.category) });
+    marker.bindPopup(popupHtml(p));
+    marker.on("click", () => { highlightCard(p.id); collapseSheetOnMobile(); });
+    markersLayer.addLayer(marker);
+    markerById[p.id] = marker;
+  });
+}
+
+function renderList(places) {
+  const list = document.getElementById("place-list");
+  list.innerHTML = "";
+  places.forEach(p => {
+    const card = document.createElement("div");
+    card.className = "place-card";
+    card.dataset.id = p.id;
+    const tags = (p.tags || []).slice(0, 4).map(t => `<span class="tag-pill">${t}</span>`).join(" ");
+    const rating = p.rating ? ` · ★${p.rating.toFixed(1)}` : "";
+    card.innerHTML = `
+      <div class="name">${p.name}</div>
+      <div class="meta">${p.category.replace(/_/g, " ")}${rating}</div>
+      <div class="tags">${tags}</div>
+    `;
+    card.addEventListener("click", () => {
+      map.setView([p.lat, p.lng], 15);
+      const marker = markerById[p.id];
+      if (marker) marker.openPopup();
+      highlightCard(p.id);
+      collapseSheetOnMobile();
+    });
+    list.appendChild(card);
+  });
+}
+
+function isMobile() {
+  return window.matchMedia("(max-width: 768px)").matches;
+}
+
+function toggleSheet() {
+  document.getElementById("sidebar").classList.toggle("expanded");
+}
+
+function collapseSheetOnMobile() {
+  if (isMobile()) document.getElementById("sidebar").classList.remove("expanded");
+}
+
+function openChatModal() {
+  const panel = document.getElementById("chat-panel");
+  panel.classList.remove("collapsed");
+  panel.classList.add("modal-open");
+  document.body.classList.add("chat-modal-active");
+  document.getElementById("chat-input").focus();
+}
+
+function closeChatModal() {
+  document.getElementById("chat-panel").classList.remove("modal-open");
+  document.body.classList.remove("chat-modal-active");
+}
+
+function highlightCard(id) {
+  if (selectedCardEl) selectedCardEl.classList.remove("selected");
+  const el = document.querySelector(`.place-card[data-id="${id}"]`);
+  if (el) {
+    el.classList.add("selected");
+    el.scrollIntoView({ block: "nearest" });
+    selectedCardEl = el;
+  }
+}
+
+function toggleChat() {
+  if (window.matchMedia("(max-width: 768px)").matches) return; // mobile uses the FAB + full-screen modal instead
+  document.getElementById("chat-panel").classList.toggle("collapsed");
+  const icon = document.getElementById("chat-toggle-icon");
+  icon.textContent = document.getElementById("chat-panel").classList.contains("collapsed") ? "▸" : "▾";
+}
+
+function clearChat() {
+  chatResults = null;
+  document.getElementById("chat-answer").className = "empty";
+  document.getElementById("chat-answer").textContent =
+    "Ask a question and I'll search your saved places and answer using only what you've actually saved.";
+  document.getElementById("chat-nearby").innerHTML = "";
+  document.getElementById("chat-clear").style.display = "none";
+  document.getElementById("chat-input").value = "";
+  applyFilters();
+}
+
+async function submitChat(question) {
+  const answerEl = document.getElementById("chat-answer");
+  const sendBtn = document.getElementById("chat-send");
+  sendBtn.disabled = true;
+  answerEl.className = "";
+  answerEl.textContent = "Thinking...";
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, top_k: 8 }),
+    });
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Chat search failed");
+
+    answerEl.textContent = data.answer;
+    chatResults = data.candidates;
+    document.getElementById("chat-clear").style.display = "inline-block";
+    document.getElementById("chat-nearby").innerHTML = data.nearby_recommendations
+      ? `<div class="nearby-title">Similar places nearby</div>` + renderNearbyHtml(data.nearby_recommendations)
+      : "";
+    applyFilters();
+
+    if (chatResults.length) {
+      const bounds = L.latLngBounds(chatResults.map(p => [p.lat, p.lng]));
+      map.fitBounds(bounds, { padding: [40, 40] });
+    }
+  } catch (err) {
+    answerEl.className = "";
+    answerEl.textContent = `Error: ${err.message}. Is scripts/serve_app.py running (not a plain static server)?`;
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+async function init() {
+  map = L.map("map").setView([12.95, 77.6], 11);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 19,
+  }).addTo(map);
+  markersLayer = L.markerClusterGroup({ maxClusterRadius: 40 });
+  map.addLayer(markersLayer);
+
+  const res = await fetch("/api/places");
+  if (res.status === 401) {
+    window.location.href = "/login";
+    return;
+  }
+  allPlaces = await res.json();
+
+  renderCategoryChips();
+  applyFilters();
+
+  if (allPlaces.length) {
+    const bounds = L.latLngBounds(allPlaces.map(p => [p.lat, p.lng]));
+    map.fitBounds(bounds, { padding: [30, 30] });
+  }
+
+  document.getElementById("search-box").addEventListener("input", applyFilters);
+  document.getElementById("search-box").addEventListener("focus", () => {
+    if (isMobile()) document.getElementById("sidebar").classList.add("expanded");
+  });
+  document.getElementById("chat-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = document.getElementById("chat-input");
+    const question = input.value.trim();
+    if (question) submitChat(question);
+  });
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/service-worker.js").catch((err) => console.warn("SW registration failed:", err));
+  }
+
+  fetch("/api/needs-review").then(r => r.ok ? r.json() : []).then(items => {
+    if (items.length) {
+      document.getElementById("review-count").textContent = ` (${items.length})`;
+    }
+  }).catch(() => {});
+}
+
+let deferredInstallPrompt = null;
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  // Chrome/Android fires this when the PWA is eligible to install. We stop
+  // the automatic mini-infobar and show our own button instead, so users can
+  // trigger install on demand from a visible spot in the UI.
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  document.getElementById("install-btn").style.display = "block";
+});
+
+document.getElementById("install-btn").addEventListener("click", async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  document.getElementById("install-btn").style.display = "none";
+});
+
+window.addEventListener("appinstalled", () => {
+  document.getElementById("install-btn").style.display = "none";
+});
+
+// If the browser doesn't support beforeinstallprompt (e.g. iOS Safari) or
+// the app is already installed, fall back to a manual hint after a delay.
+setTimeout(() => {
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+  if (!deferredInstallPrompt && !isStandalone) {
+    document.getElementById("install-hint").style.display = "block";
+  }
+}, 2500);
+
+init();
+</script>
+</body>
+</html>
