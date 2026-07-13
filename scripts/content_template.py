@@ -20,6 +20,10 @@ CONTENT_HTML = """<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon-192.png">
 <meta name="theme-color" content="#4f8cff">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SaveMe">
 <style>
   :root { --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e8eaed; --muted: #9aa0ac; --accent: #4f8cff; }
   * { box-sizing: border-box; }

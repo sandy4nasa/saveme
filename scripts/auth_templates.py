@@ -42,6 +42,10 @@ LOGIN_HTML = """<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon-192.png">
 <meta name="theme-color" content="#4f8cff">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SaveMe">
 <style>{style}</style>
 </head>
 <body>
@@ -99,6 +103,10 @@ SIGNUP_HTML = """<!DOCTYPE html>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon-192.png">
 <meta name="theme-color" content="#4f8cff">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SaveMe">
 <style>{style}</style>
 </head>
 <body>
