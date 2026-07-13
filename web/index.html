@@ -164,6 +164,14 @@
       <p>Your saved places, mapped</p>
       <button id="install-btn" style="display:none; width:100%; margin-top:8px; padding:10px; border-radius:8px; border:none; background:#4f8cff; color:#fff; font-size:14px; font-weight:600; cursor:pointer;">⬇ Install App</button>
       <p id="install-hint" style="display:none; font-size:11px; color:#9aa0ac; margin:6px 0 0 0;">Already installed or not on a supported browser? Open the ⋮ menu → "Add to Home screen".</p>
+      <div id="ios-setup-banner" style="display:none; margin-top:8px; padding:10px; border-radius:8px; background:#1c2333; border:1px solid #2a2e38; font-size:11px; color:#c7cad1; line-height:1.5;">
+        <b style="color:#e8eaed;">📱 On iPhone/iPad?</b>
+        <ol style="margin:6px 0 8px 0; padding-left:16px;">
+          <li>Tap <b>Share</b> ⬆️ in Safari → <b>Add to Home Screen</b> (for the full app experience)</li>
+          <li>Then visit <a href="/settings" style="color:#4f8cff;">Settings</a> to set up "Share to SaveMe" from Instagram/YouTube's share sheet</li>
+        </ol>
+        <button id="ios-setup-dismiss" style="padding:6px 10px; border-radius:6px; border:none; background:#2a2e38; color:#e8eaed; font-size:11px; cursor:pointer;">Got it</button>
+      </div>
       <a href="/review" id="review-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:8px; text-decoration:none;">🔍 Needs review<span id="review-count"></span></a>
       <a href="/content" id="content-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:4px; text-decoration:none;">📝 Saved Content</a>
       <a href="/import" id="import-link" style="display:block; font-size:11px; color:#9aa0ac; margin-top:4px; text-decoration:none;">📥 Import from Instagram</a>
@@ -606,14 +614,35 @@ window.addEventListener("appinstalled", () => {
   document.getElementById("install-btn").style.display = "none";
 });
 
+// iOS Safari never fires beforeinstallprompt (it doesn't support it), so it
+// needs its own tailored walkthrough: Add to Home Screen (for the standalone
+// PWA) plus a pointer to /settings for the iOS Shortcut share-sheet setup,
+// since iOS also lacks the Web Share Target API that Android's "Share to
+// SaveMe" relies on.
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); // iPadOS 13+ reports as Mac
+}
+
 // If the browser doesn't support beforeinstallprompt (e.g. iOS Safari) or
 // the app is already installed, fall back to a manual hint after a delay.
 setTimeout(() => {
   const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
-  if (!deferredInstallPrompt && !isStandalone) {
+  if (isStandalone) return;
+
+  if (isIOS()) {
+    if (localStorage.getItem("saveme_ios_setup_dismissed") !== "1") {
+      document.getElementById("ios-setup-banner").style.display = "block";
+    }
+  } else if (!deferredInstallPrompt) {
     document.getElementById("install-hint").style.display = "block";
   }
 }, 2500);
+
+document.getElementById("ios-setup-dismiss").addEventListener("click", () => {
+  localStorage.setItem("saveme_ios_setup_dismissed", "1");
+  document.getElementById("ios-setup-banner").style.display = "none";
+});
 
 init();
 </script>
