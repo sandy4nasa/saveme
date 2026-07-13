@@ -764,6 +764,53 @@ Recommends similar places near a given saved place — both from the user's own 
 
 ---
 
+## 26. Platform Badges + Filter in List Views — Implemented
+
+**Problem**: `saved_places.platform` (`"instagram"` / `"youtube"`) was tracked in the DB from ingestion onward but never surfaced anywhere in the UI -- no way to tell at a glance which platform a saved place came from, or filter by it.
+
+**Changes**:
+- `export_map_data.py`: `build_places_list()` and `list_saved_content()` now select `sp.platform` (defaults to `"instagram"` for rows saved before platform tracking existed).
+- `chat_search.py`: `fetch_candidate_pool()` also returns `platform` so chat results carry it too.
+- `serve_app.py`: `/api/chat` candidates response includes `platform`.
+- `web/index.html`: new platform filter chip row (mirrors the existing category chip row), a small platform icon/badge (📷 Instagram / ▶️ YouTube) on both list cards and map popups, wired into `applyFilters()` via an `activePlatforms` Set.
+- `content_template.py`: platform badge added to Saved Content cards too (no filter added there -- confirmed with the user that Saved Content should stay its own separate, unfiltered list rather than merging filter UI into it).
+
+**Clarified list-view semantics while doing this work**: the main map/list view shows *all* `status='ready'` places with lat/lng -- there is no pagination limit, so "does list view show all saved places?" is yes by design. Saved Content (`status='saved_no_place'`) and Needs Review (everything else stuck) are separate tabs, not subsets shown elsewhere.
+
+**Verified**: scratch DB copy + live HTTP calls confirmed `/api/places`, `/api/content`, `/api/chat` all return `platform` correctly. Deployed to production, confirmed 200 OK. Pushed as `5179172`.
+
+---
+
+## 27. iOS Support via Shortcuts Share-Sheet + Personal API Tokens — Implemented
+
+**Problem**: the Android "Share to SaveMe" flow relies on Chrome's Web Share Target API (`share_target` in `manifest.json`). iOS Safari does not implement this API (confirmed still true as of 2026 via live web search) and there's no PWA-only workaround -- this is a real platform gap, not a bug. Everything else about the PWA (manifest, standalone display, "Add to Home Screen", login, map/chat/list views) already works fine in iOS Safari today with zero changes.
+
+**Options considered** (see prior chat discussion for full detail):
+1. Manual paste-link page (~30 min, no native app) -- not built, lowest effort fallback if Shortcuts prove troublesome for a given user.
+2. **iOS Shortcuts share-sheet integration (chosen)** -- ~1 evening, no App Store, no Apple Developer account required, works from the native Share Sheet in Instagram/YouTube/Safari.
+3. Real native Share Extension app -- few days-1 week, requires $99/yr Apple Developer Program + Swift/Xcode + App Store or TestFlight review. Deferred; revisit only if Shortcuts-based approach proves insufficient at scale.
+
+**Why a new auth path was needed**: Shortcuts runs outside Safari's cookie jar, so it can't authenticate via the existing session-cookie mechanism used by `/api/ingest`. A personal, non-expiring API token (`Authorization: Bearer <token>`) was added as a parallel auth path specifically for this use case.
+
+**Apple limitation worked around**: a Shortcut distributed via a shared iCloud link can't be pre-filled with a different secret per recipient -- there's no API for a website to inject data into someone else's Shortcut at install time. Workaround: a "Copy My Token" button on the new Settings page, then the user pastes it once into the Shortcut's `Get Contents of URL` header when building it (one-time, ~2 minutes) -- fully automatic every time after that.
+
+**Implementation**:
+- `auth.py`: `ensure_auth_schema()` adds a non-expiring `api_token` column (idempotent `ALTER TABLE`, unlike session tokens which expire after `SESSION_TTL_DAYS`). `create_user()` now auto-generates a token at signup. New helpers: `get_or_create_api_token(con, user_id)` (lazily backfills a token for pre-existing accounts), `get_user_from_api_token(con, token)`, `regenerate_api_token(con, user_id)` (rotates a token, e.g. if a shared/exported Shortcut leaked one).
+- `serve_app.py`: `_current_user()` now falls back to checking `Authorization: Bearer <token>` (via `auth.get_user_from_api_token`) whenever there's no valid session cookie -- this makes every existing `is_api=True` route (`/api/ingest`, `/api/retry`, `/api/chat`, etc.) automatically support token auth with no per-route changes needed. New `GET /settings` route (session-cookie auth only, HTML) shows the user's token plus copy button plus step-by-step instructions for building the Shortcut. New `POST /api/regenerate-token` endpoint.
+- `settings_template.py` (new file): renders the token directly server-side (page already requires a valid session to view, so no extra API call needed just to display it), plus the exact Shortcut action recipe: Share Sheet Input → `Get Dictionary from Input` → `Get Dictionary Value` (key `link`, falling back to plain-text input) → `Get Contents of URL` (POST `https://saveme.blog/api/ingest`, `Authorization: Bearer <token>` header, JSON body `{"source_url": ...}`) → `Show Notification` with the response.
+- `web/index.html`: nav link "⚙️ Settings / iOS setup" added alongside the existing Needs Review / Saved Content / Import links.
+
+**Verified end-to-end**:
+- Scratch DB copy: `/settings` renders the correct token via session cookie; unauthenticated request to `/settings` gets a 302 redirect; `/api/ingest` succeeds with zero cookie using only `Authorization: Bearer <token>` (returned a real `place_id`); a bad/garbage token correctly gets 401 `"Not logged in"`; `/api/regenerate-token` correctly rotates the token and rejects unauthenticated calls.
+- Production smoke test: same checks repeated against the live DB via SSH+curl (test session cleaned up afterward); ran a one-off backfill generating tokens for both existing production users (`sandy4nasa`, `savitha`) so they can use the Shortcut immediately without re-signing-up.
+- Deployed: rsynced `auth.py`, `serve_app.py`, `settings_template.py`, `index.html`; compiled on the droplet venv; restarted `saveme.service`; confirmed clean restart in `journalctl` and `200`/`302` responses as expected.
+
+**Not built / explicitly deferred**: a literal `.shortcut` file cannot be generated by code tooling -- the Settings page gives human-followable, exact step-by-step instructions for the user to build it themselves in the iOS Shortcuts app. `apple-touch-icon`/`apple-mobile-web-app-capable` meta tags for nicer "Add to Home Screen" icon/status-bar polish were mentioned but not added (low priority, cosmetic only -- PWA install already fully functional on iOS today).
+
+**Status: shipped.** Pushed as `8a7f8f0`.
+
+---
+
 ## 15. Suggested Order of Operations (Do This First)
 
 1. Get Telegram bot token (fastest, zero approval wait) — build ingestion + extraction waterfall against it first.
