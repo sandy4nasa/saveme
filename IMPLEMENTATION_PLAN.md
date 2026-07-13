@@ -683,6 +683,31 @@ Recommends similar places near a given saved place — both from the user's own 
 
 ---
 
+## 23. YouTube Import Support (Share-to-App) — Implemented
+
+**Goal**: extend the existing "Share to SaveMe" pipeline (Section 14) beyond Instagram so sharing a YouTube video/Shorts link works exactly the same way -- no app changes needed on the Android/PWA side, since `web/manifest.json`'s `share_target` already accepts any URL generically (it was never Instagram-restricted).
+
+**Why YouTube was easy compared to Instagram**: Instagram has no official way to fetch an arbitrary public post's caption (hence the `og:description` scraping in `fetch_instagram_caption.py`), and no official way to fetch its video bytes either (hence the paid HikerAPI integration in `fetch_instagram_video.py`). YouTube, by contrast, exposes both title and description for any public video via the official **YouTube Data API v3** `videos.list` endpoint using just an API key -- no OAuth, no per-user consent screen, no scraping fragility. The existing `GOOGLE_PLACES_API_KEY` already works for this (same Google Cloud project, just needed "YouTube Data API v3" enabled once in the console) -- no new secret required.
+
+**Implementation**:
+- **`scripts/fetch_youtube_metadata.py`** (new): `extract_video_id()` pulls the 11-character video ID out of any common URL shape (`youtube.com/watch?v=`, `youtu.be/`, `youtube.com/shorts/`, `youtube.com/embed/`). `fetch_metadata()` calls `videos.list?part=snippet` and returns `{"caption": f"{title}\n\n{description}", "owner_username": channelTitle, "title": ..., "video_id": ...}` -- deliberately the same shape as `fetch_instagram_caption.fetch_caption()`'s return value so it plugs into the exact same downstream code. Returns `None` on any failure (private/deleted video, quota exceeded, invalid URL) -- same best-effort contract as the Instagram fetcher.
+- **`scripts/ingest_pipeline.py`**:
+  - Added `detect_platform(source_url)` -- returns `"instagram"`, `"youtube"`, or `"unknown"` based on the URL's domain.
+  - `resolve_caption()` now takes `platform` and `youtube_api_key` params and dispatches to the right fetcher (`fetch_youtube_metadata` for YouTube, `fetch_caption` for Instagram, skipped entirely for `"unknown"` -- falls back to the manual note alone, same graceful-degradation contract as a fetch failure).
+  - `ingest_single_item()` now calls `detect_platform()` instead of hardcoding `"platform": "instagram"`, and passes `places_key` through as the YouTube API key (same key, dual-purpose).
+  - `retry_single_item()` re-detects platform from the stored URL as a fallback if the DB's `platform` column is empty (covers rows saved before this fix).
+  - **No changes needed** to `extract_places_llm.py`, `enrich_places.py`, `tag_places_llm.py`, or `embed_places.py` -- the entire extraction/tagging/embedding pipeline already only cares about `raw_caption`/`hashtags`/`owner_username`, completely platform-agnostic by design.
+  - **Video-analysis fallback** (`analyze_video_llm.py`) already no-ops safely for YouTube URLs without any code change: `fetch_instagram_video.fetch_video_info()` explicitly checks `"instagram.com" not in source_url` and returns `None`, so a YouTube item that doesn't resolve from title+description alone just lands on `no_place_in_caption`/`saved_no_place` same as today -- no wasted HikerAPI calls, no crash. A YouTube-native video-analysis fallback (via `yt-dlp` download, which works without cookies for YouTube unlike Instagram, or a transcript API for free spoken-audio signal) is a natural fast-follow, not built in this pass.
+- **Verified end-to-end** against real public videos via a scratch copy of the production DB: a restaurant-review video ("Barstool Pizza Review - L & B Spumoni Gardens") correctly resolved to `status=ready`, `platform=youtube`, the real Brooklyn address, tagged `category:restaurant` + `pizza`/`italian-food`/`brooklyn`, and embedded -- with zero changes to the extraction code itself. A music video with no venue (Rick Astley) correctly resolved to `saved_no_place` with a sensible title and `music-video` tag, exactly mirroring the Instagram content-only-post behavior from Section 22.
+- Deployed to production (`fetch_youtube_metadata.py` new, `ingest_pipeline.py` updated; `saveme.service` restarted; site verified `200 OK`).
+
+**Not yet built (explicitly out of scope for this pass)**:
+- Transcript-based extraction for videos where title+description doesn't name the place but spoken narration does (`youtube-transcript-api`, free, no auth wall).
+- `yt-dlp`-based video-content-analysis fallback (equivalent to Section 20's Instagram video analysis, but free -- no HikerAPI-style paid API needed since `yt-dlp` works without cookies for most public YouTube videos).
+- Facebook support (see Section 21's feasibility note: harder, needs a paid third-party scraper like Apify).
+
+---
+
 ## 15. Suggested Order of Operations (Do This First)
 
 1. Get Telegram bot token (fastest, zero approval wait) — build ingestion + extraction waterfall against it first.

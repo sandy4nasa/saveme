@@ -37,6 +37,7 @@ from extract_places_llm import process_item  # noqa: E402
 from tag_places_llm import call_gemini as call_gemini_tag  # noqa: E402
 from embed_places import call_embed, build_embedding_text  # noqa: E402
 from fetch_instagram_caption import fetch_caption  # noqa: E402
+from fetch_youtube_metadata import fetch_metadata as fetch_youtube_metadata  # noqa: E402
 from analyze_video_llm import analyze_video  # noqa: E402
 
 HASHTAG_RE = re.compile(r"#(\w+)")
@@ -46,15 +47,39 @@ def extract_hashtags(text):
     return HASHTAG_RE.findall(text or "")
 
 
-def resolve_caption(source_url, note_text, owner_username=None):
-    """Auto-fetches the real Instagram caption (best-effort, see
-    fetch_instagram_caption.py) and combines it with any manual note the
-    user supplied. Scraped caption comes first (it's the actual post
+def detect_platform(source_url):
+    """Identifies which platform a shared URL came from, so ingestion can
+    dispatch to the right caption/description fetcher. Falls back to
+    'unknown' for anything else -- resolve_caption() handles that
+    gracefully by skipping auto-fetch and using the manual note alone,
+    same as a fetch failure."""
+    source_url = source_url or ""
+    if "instagram.com" in source_url:
+        return "instagram"
+    if "youtube.com" in source_url or "youtu.be" in source_url:
+        return "youtube"
+    return "unknown"
+
+
+def resolve_caption(source_url, note_text, owner_username=None, platform=None, youtube_api_key=None):
+    """Auto-fetches the real post content -- Instagram's caption via
+    og:description scraping (fetch_instagram_caption.py) or a YouTube
+    video's title+description via the official Data API v3
+    (fetch_youtube_metadata.py) -- and combines it with any manual note the
+    user supplied. Fetched content comes first (it's the actual post
     content); the manual note -- if any -- is appended as extra user
-    context/clarification. Falls back to the manual note alone if scraping
-    is unavailable (private post, network error, markup change, etc.)."""
+    context/clarification. Falls back to the manual note alone if fetching
+    is unavailable (private post/video, network error, unsupported
+    platform, missing API key, etc.)."""
     note_text = (note_text or "").strip()
-    fetched = fetch_caption(source_url)
+    platform = platform or detect_platform(source_url)
+
+    if platform == "youtube" and youtube_api_key:
+        fetched = fetch_youtube_metadata(source_url, youtube_api_key)
+    elif platform == "instagram":
+        fetched = fetch_caption(source_url)
+    else:
+        fetched = None
 
     if not fetched:
         return note_text, owner_username
@@ -188,10 +213,11 @@ def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_k
     (first) resolved place is at the top level for backward compatibility;
     if a post named more than one distinct real place (multi_place), the
     rest are under "additional_places"."""
-    caption, owner_username = resolve_caption(source_url, note_text, owner_username)
+    platform = detect_platform(source_url)
+    caption, owner_username = resolve_caption(source_url, note_text, owner_username, platform=platform, youtube_api_key=places_key)
     item = {
         "source_url": source_url,
-        "platform": "instagram",
+        "platform": platform,
         "raw_caption": caption,
         "hashtags": extract_hashtags(caption),
         "title": "",
@@ -289,10 +315,11 @@ def retry_single_item(con, user_id, row_id, note_text, gemini_key, places_key):
     if not row:
         return None
     source_url, platform, owner_username = row
-    caption, owner_username = resolve_caption(source_url, note_text, owner_username)
+    platform = platform or detect_platform(source_url)
+    caption, owner_username = resolve_caption(source_url, note_text, owner_username, platform=platform, youtube_api_key=places_key)
     item = {
         "source_url": source_url,
-        "platform": platform or "instagram",
+        "platform": platform,
         "raw_caption": caption,
         "hashtags": extract_hashtags(caption),
         "title": "",
