@@ -496,6 +496,7 @@ def make_handler(db_path, api_key, places_key, invite_code):
                         "tags": place["tags"],
                         "category": place["category"],
                         "source_url": place["source_url"],
+                        "platform": place.get("platform") or "instagram",
                         "score": round(score, 4),
                     }
                     for place, score in ranked

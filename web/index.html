@@ -66,6 +66,13 @@
     cursor: pointer; user-select: none; color: var(--muted); background: #10131a;
   }
   .cat-chip.active { color: #fff; border-color: var(--accent); background: var(--accent); }
+  #platform-filters { padding: 8px 16px 12px 16px; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--border); }
+  .platform-chip {
+    font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    cursor: pointer; user-select: none; color: var(--muted); background: #10131a;
+  }
+  .platform-chip.active { color: #fff; border-color: var(--accent); background: var(--accent); }
+  .platform-badge { font-size: 11px; margin-right: 4px; }
   #stats { padding: 8px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--border); }
   #place-list { flex: 1; overflow-y: auto; }
   .place-card {
@@ -115,11 +122,13 @@
     #sheet-handle span { width: 36px; height: 4px; border-radius: 999px; background: var(--border); }
     #search-box { margin-top: 0; }
     #chat-panel { display: none; }
-    #category-filters, #stats, #place-list { display: none; }
+    #category-filters, #platform-filters, #stats, #place-list { display: none; }
     #sidebar.expanded #category-filters,
+    #sidebar.expanded #platform-filters,
     #sidebar.expanded #stats,
     #sidebar.expanded #place-list { display: block; }
-    #sidebar.expanded #category-filters { display: flex; }
+    #sidebar.expanded #category-filters,
+    #sidebar.expanded #platform-filters { display: flex; }
 
     #chat-fab {
       display: flex; align-items: center; justify-content: center; position: fixed;
@@ -175,6 +184,7 @@
       </div>
     </div>
     <div id="category-filters"></div>
+    <div id="platform-filters"></div>
     <div id="stats"></div>
     <div id="place-list"></div>
   </div>
@@ -200,6 +210,7 @@ const CATEGORY_COLORS = {
 
 let map, markersLayer, allPlaces = [], markerById = {};
 let activeCategories = new Set();
+let activePlatforms = new Set();
 let selectedCardEl = null;
 let chatResults = null; // null = no active chat search; array = active chat candidate list
 let cachedUserLocation = null; // {lat, lng} once resolved once; avoids re-prompting every message
@@ -233,6 +244,17 @@ function categoryColor(cat) {
   return CATEGORY_COLORS[cat] || CATEGORY_COLORS.other;
 }
 
+const PLATFORM_ICONS = { instagram: "📷", youtube: "▶️" };
+const PLATFORM_LABELS = { instagram: "Instagram", youtube: "YouTube" };
+
+function platformIcon(platform) {
+  return PLATFORM_ICONS[platform] || "🔗";
+}
+
+function platformLabel(platform) {
+  return PLATFORM_LABELS[platform] || (platform || "unknown");
+}
+
 function makeIcon(cat) {
   const color = categoryColor(cat);
   return L.divIcon({
@@ -247,7 +269,7 @@ function popupHtml(p) {
   const tags = (p.tags || []).map(t => `<span class="tag-pill">${t}</span>`).join(" ");
   const rating = p.rating ? `<span class="popup-rating">★ ${p.rating.toFixed(1)} (${p.user_ratings_total || 0})</span>` : "";
   return `
-    <div class="popup-name">${p.name}</div>
+    <div class="popup-name"><span class="platform-badge" title="${platformLabel(p.platform)}">${platformIcon(p.platform)}</span>${p.name}</div>
     <div class="popup-addr">${p.address || ""}</div>
     <div class="popup-tags">${tags}</div>
     <div>${rating}</div>
@@ -332,6 +354,31 @@ function renderCategoryChips() {
   });
 }
 
+function renderPlatformChips() {
+  const container = document.getElementById("platform-filters");
+  const platforms = [...new Set(allPlaces.map(p => p.platform || "instagram"))].sort();
+  container.innerHTML = "";
+  platforms.forEach(platform => {
+    const chip = document.createElement("div");
+    chip.className = "platform-chip active";
+    const count = allPlaces.filter(p => (p.platform || "instagram") === platform).length;
+    chip.textContent = `${platformIcon(platform)} ${platformLabel(platform)} (${count})`;
+    chip.dataset.platform = platform;
+    chip.addEventListener("click", () => {
+      if (activePlatforms.has(platform)) {
+        activePlatforms.delete(platform);
+        chip.classList.remove("active");
+      } else {
+        activePlatforms.add(platform);
+        chip.classList.add("active");
+      }
+      applyFilters();
+    });
+    activePlatforms.add(platform);
+    container.appendChild(chip);
+  });
+}
+
 function applyFilters() {
   if (chatResults) {
     // A chat search is active -- it takes over the map/list view until cleared.
@@ -343,6 +390,7 @@ function applyFilters() {
   const searchTerm = document.getElementById("search-box").value.trim().toLowerCase();
   const filtered = allPlaces.filter(p => {
     if (!activeCategories.has(p.category)) return false;
+    if (!activePlatforms.has(p.platform || "instagram")) return false;
     if (!searchTerm) return true;
     const haystack = [p.name, p.address, p.collection_name, ...(p.tags || [])].join(" ").toLowerCase();
     return haystack.includes(searchTerm);
@@ -374,7 +422,7 @@ function renderList(places) {
     const tags = (p.tags || []).slice(0, 4).map(t => `<span class="tag-pill">${t}</span>`).join(" ");
     const rating = p.rating ? ` · ★${p.rating.toFixed(1)}` : "";
     card.innerHTML = `
-      <div class="name">${p.name}</div>
+      <div class="name"><span class="platform-badge" title="${platformLabel(p.platform)}">${platformIcon(p.platform)}</span>${p.name}</div>
       <div class="meta">${p.category.replace(/_/g, " ")}${rating}</div>
       <div class="tags">${tags}</div>
     `;
@@ -500,6 +548,7 @@ async function init() {
   allPlaces = await res.json();
 
   renderCategoryChips();
+  renderPlatformChips();
   applyFilters();
 
   if (allPlaces.length) {

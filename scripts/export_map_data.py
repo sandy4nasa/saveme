@@ -30,19 +30,19 @@ def build_places_list(con, user_id=None):
 
     query = f"""
         SELECT sp.id, sp.name, sp.lat, sp.lng, sp.address, sp.rating, sp.user_ratings_total,
-               sp.source_url, sp.collection_name, sp.owner_username,
+               sp.source_url, sp.collection_name, sp.owner_username, sp.platform,
                list(pt.tag) FILTER (WHERE pt.tag NOT LIKE 'category:%') AS tags,
                list(pt.tag) FILTER (WHERE pt.tag LIKE 'category:%') AS category_tags
         FROM saved_places sp
         LEFT JOIN place_tags pt ON pt.place_id = sp.id
         WHERE {' AND '.join(where)}
         GROUP BY sp.id, sp.name, sp.lat, sp.lng, sp.address, sp.rating, sp.user_ratings_total,
-                 sp.source_url, sp.collection_name, sp.owner_username
+                 sp.source_url, sp.collection_name, sp.owner_username, sp.platform
         ORDER BY sp.id
     """
     rows = con.execute(query, params).fetchall()
     cols = ["id", "name", "lat", "lng", "address", "rating", "user_ratings_total",
-            "source_url", "collection_name", "owner_username", "tags", "category_tags"]
+            "source_url", "collection_name", "owner_username", "platform", "tags", "category_tags"]
 
     places = []
     for r in rows:
@@ -51,6 +51,7 @@ def build_places_list(con, user_id=None):
         category = cat_tags[0].replace("category:", "") if cat_tags else "other"
         d["category"] = category
         d["tags"] = d["tags"] or []
+        d["platform"] = d["platform"] or "instagram"  # rows saved before platform tracking was added
         places.append(d)
     return places
 
@@ -88,24 +89,25 @@ def list_saved_content(con, user_id):
     browsable list in the app (the "Saved Content" tab)."""
     rows = con.execute(
         """
-        SELECT sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at,
+        SELECT sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at, sp.platform,
                list(pt.tag) FILTER (WHERE pt.tag NOT LIKE 'category:%') AS tags,
                list(pt.tag) FILTER (WHERE pt.tag LIKE 'category:%') AS category_tags
         FROM saved_places sp
         LEFT JOIN place_tags pt ON pt.place_id = sp.id
         WHERE sp.user_id = ? AND sp.status = 'saved_no_place'
-        GROUP BY sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at
+        GROUP BY sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at, sp.platform
         ORDER BY sp.saved_at DESC
         """,
         [user_id],
     ).fetchall()
-    cols = ["id", "name", "source_url", "raw_caption", "owner_username", "saved_at", "tags", "category_tags"]
+    cols = ["id", "name", "source_url", "raw_caption", "owner_username", "saved_at", "platform", "tags", "category_tags"]
     items = []
     for r in rows:
         d = dict(zip(cols, r))
         cat_tags = d.pop("category_tags") or []
         d["category"] = cat_tags[0].replace("category:", "") if cat_tags else "other"
         d["tags"] = d["tags"] or []
+        d["platform"] = d["platform"] or "instagram"
         items.append(d)
     return items
 

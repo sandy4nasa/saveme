@@ -77,12 +77,14 @@ function render() {
   list.innerHTML = "";
   if (!items.length) { empty.style.display = "block"; return; }
   empty.style.display = "none";
+  const PLATFORM_ICONS = { instagram: "📷", youtube: "▶️" };
   for (const item of items) {
     const card = document.createElement("div");
     card.className = "card";
     const tags = (item.tags || []).map(t => `<span class="tag">${t}</span>`).join(" ");
+    const badge = PLATFORM_ICONS[item.platform] || "🔗";
     card.innerHTML = `
-      <div class="title">${item.name || "Saved post"}</div>
+      <div class="title">${badge} ${item.name || "Saved post"}</div>
       <div class="caption">${(item.raw_caption || "").replace(/</g, "&lt;")}</div>
       <div>${tags}</div>
       <div class="meta">

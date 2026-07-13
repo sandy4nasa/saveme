@@ -93,7 +93,7 @@ def fetch_candidate_pool(con, user_id):
     Fine at hundreds-of-rows scale; swap for an HNSW index query at bigger scale."""
     rows = con.execute("""
         SELECT sp.id, sp.name, sp.address, sp.source_url, sp.rating, sp.user_ratings_total,
-               sp.lat, sp.lng, sp.saved_at,
+               sp.lat, sp.lng, sp.saved_at, sp.platform,
                list(pt.tag) FILTER (WHERE pt.tag NOT LIKE 'category:%') AS tags,
                list(pt.tag) FILTER (WHERE pt.tag LIKE 'category:%') AS category_tags,
                e.embedding
@@ -102,16 +102,17 @@ def fetch_candidate_pool(con, user_id):
         LEFT JOIN place_tags pt ON pt.place_id = sp.id
         WHERE sp.user_id = ? AND sp.status IN ('ready', 'saved_no_place')
         GROUP BY sp.id, sp.name, sp.address, sp.source_url, sp.rating, sp.user_ratings_total,
-                 sp.lat, sp.lng, sp.saved_at, e.embedding
+                 sp.lat, sp.lng, sp.saved_at, sp.platform, e.embedding
     """, [user_id]).fetchall()
     cols = ["id", "name", "address", "source_url", "rating", "user_ratings_total",
-            "lat", "lng", "saved_at", "tags", "category_tags", "embedding"]
+            "lat", "lng", "saved_at", "platform", "tags", "category_tags", "embedding"]
     places = []
     for r in rows:
         d = dict(zip(cols, r))
         cat_tags = d.pop("category_tags") or []
         d["category"] = cat_tags[0].replace("category:", "") if cat_tags else "other"
         d["tags"] = d["tags"] or []
+        d["platform"] = d["platform"] or "instagram"
         places.append(d)
     return places
 
