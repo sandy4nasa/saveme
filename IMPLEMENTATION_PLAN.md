@@ -732,7 +732,35 @@ Recommends similar places near a given saved place — both from the user's own 
 
 **Known risk / caveat**: this entire video-download area is an actively-evolving cat-and-mouse space -- YouTube has changed its anti-bot enforcement multiple times in 2025 alone, and the `player_client: ["android"]` workaround could stop working with a future YouTube-side change. If that happens, the transcript tier (which doesn't depend on `yt-dlp` at all) still provides a free fallback signal, and the pipeline degrades gracefully to `no_place_in_caption`/`saved_no_place` rather than failing.
 
-**Not yet built**: Facebook support (Section 21's feasibility note still stands -- needs a paid third-party scraper like Apify, no free/official path like YouTube's).
+**Not yet built**: Facebook support -- see Section 25 for the full feasibility findings and proposed approach (researched, not yet implemented).
+
+---
+
+## 25. Facebook Import Feasibility (Researched, Not Yet Built)
+
+**Goal**: extend the same share-target ingestion pipeline (Instagram → Section 14, YouTube → Sections 23-24) to Facebook post/video links.
+
+**Verdict: harder and not free, unlike YouTube -- but architecturally the same pattern already proven for Instagram.**
+
+**Why it's harder than YouTube**:
+- No official API path for reading arbitrary public posts. The Graph API only exposes content from Pages/accounts the calling app has been OAuth-authorized against by the owner -- it does not let a third-party app read random public posts the way YouTube's Data API v3 does with just an API key.
+- `og:description` scraping (the trick that works for Instagram in `fetch_instagram_caption.py`) is largely blocked on Facebook as of 2026 -- Meta enforces anti-scraping more aggressively there than on Instagram.
+- No free tool equivalent to `yt-dlp` exists for downloading Facebook video/photo post content at the public-post level (yt-dlp does support some Facebook video URLs, but not with the same reliability or coverage as YouTube, and it does nothing for photo-only posts or captions).
+
+**Proposed approach: Apify's Facebook Posts Scraper**
+- Same architectural pattern as Instagram's HikerAPI integration -- a paid third-party scraping service takes on the auth/anti-bot complexity, and the pipeline just calls its API and gets back caption + media URLs.
+- Cost: **~$2 per 1,000 posts** -- notably cheaper than HikerAPI's Instagram pricing (~$0.0006-$0.02/request depending on plan, i.e. roughly $0.60-$20/1,000).
+- Supports caption + video/image extraction for public posts and Pages, which is enough to plug into the existing extraction/tagging/embedding pipeline unchanged (same platform-agnostic design already proven for YouTube in Section 23).
+
+**Estimated integration effort** (mirrors the YouTube build in Section 23, roughly 1-2 days):
+1. `scripts/fetch_facebook_caption.py` (new) -- calls the Apify actor's API for a given post URL, returns the same `{"caption": ..., "owner_username": ...}` shape already used by `fetch_instagram_caption.fetch_caption()` and `fetch_youtube_metadata.fetch_metadata()`.
+2. `scripts/ingest_pipeline.py` -- extend `detect_platform()` to recognize `facebook.com`/`fb.watch` URLs, and add a `"facebook"` branch to `resolve_caption()`'s dispatch (same pattern as the existing `"youtube"` branch).
+3. If Facebook video download proves necessary for a video-analysis fallback tier (Section 20/24's pattern), evaluate Apify's video-extraction output vs. attempting `yt-dlp` first (free but less reliable for Facebook specifically) before reaching for a second paid API call.
+4. No changes needed to `extract_places_llm.py`, `tag_places_llm.py`, `embed_places.py`, or the frontend -- same platform-agnostic design that made YouTube a clean addition.
+
+**Open questions before building** (would need user input): whether the ~$2/1,000-post cost is acceptable given expected Facebook-share volume, and whether an Apify account/API key needs to be provisioned first (no key currently on hand, unlike YouTube which reused the existing Google Places key).
+
+**Status: not started.** Revisit if/when Facebook import becomes a priority.
 
 ---
 
