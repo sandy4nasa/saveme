@@ -36,12 +36,34 @@ from enrich_places import enrich_item  # noqa: E402
 from extract_places_llm import process_item  # noqa: E402
 from tag_places_llm import call_gemini as call_gemini_tag  # noqa: E402
 from embed_places import call_embed, build_embedding_text  # noqa: E402
+from fetch_instagram_caption import fetch_caption  # noqa: E402
+from analyze_video_llm import analyze_video  # noqa: E402
 
 HASHTAG_RE = re.compile(r"#(\w+)")
 
 
 def extract_hashtags(text):
     return HASHTAG_RE.findall(text or "")
+
+
+def resolve_caption(source_url, note_text, owner_username=None):
+    """Auto-fetches the real Instagram caption (best-effort, see
+    fetch_instagram_caption.py) and combines it with any manual note the
+    user supplied. Scraped caption comes first (it's the actual post
+    content); the manual note -- if any -- is appended as extra user
+    context/clarification. Falls back to the manual note alone if scraping
+    is unavailable (private post, network error, markup change, etc.)."""
+    note_text = (note_text or "").strip()
+    fetched = fetch_caption(source_url)
+
+    if not fetched:
+        return note_text, owner_username
+
+    caption = fetched["caption"]
+    if note_text and note_text not in caption:
+        caption = f"{caption}\n\n{note_text}"
+    resolved_owner = owner_username or fetched.get("owner_username")
+    return caption, resolved_owner
 
 
 def insert_single_place(con, user_id, enriched):
@@ -131,12 +153,12 @@ def tag_and_embed_single(con, place_id, enriched, gemini_key):
 def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_key, owner_username=None):
     """Main entry point. Returns a dict summarizing what happened, suitable
     for the share-target confirmation page / API response."""
-    note_text = (note_text or "").strip()
+    caption, owner_username = resolve_caption(source_url, note_text, owner_username)
     item = {
         "source_url": source_url,
         "platform": "instagram",
-        "raw_caption": note_text,
-        "hashtags": extract_hashtags(note_text),
+        "raw_caption": caption,
+        "hashtags": extract_hashtags(caption),
         "title": "",
         "owner_username": owner_username,
         "owner_name": None,
@@ -144,7 +166,7 @@ def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_k
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    enriched = _run_enrichment(item, note_text, gemini_key, places_key)
+    enriched = _run_enrichment(item, caption, gemini_key, places_key)
     place_id = insert_single_place(con, user_id, enriched)
 
     tags, embedded = [], False
@@ -170,6 +192,16 @@ def _run_enrichment(item, note_text, gemini_key, places_key):
     enriched = enrich_item(item, places_key)
     if enriched["enrichment_status"] in ("skipped_needs_llm_extraction", "no_match"):
         enriched = process_item(enriched, gemini_key, places_key)
+    if enriched["enrichment_status"] == "no_place_in_caption":
+        # Last resort: the real caption exists but doesn't name a specific
+        # place -- try analyzing the actual video (signboards, spoken
+        # address, on-screen text). Best-effort; only runs if HIKER_API_KEY
+        # is configured, and never fails the whole ingestion (see
+        # analyze_video_llm.py). Falls back to the caption-only result if
+        # this doesn't succeed.
+        video_enriched = analyze_video(enriched, gemini_key, places_key)
+        if video_enriched:
+            enriched = video_enriched
     return enriched
 
 
@@ -221,18 +253,18 @@ def retry_single_item(con, user_id, row_id, note_text, gemini_key, places_key):
     if not row:
         return None
     source_url, platform, owner_username = row
-    note_text = (note_text or "").strip()
+    caption, owner_username = resolve_caption(source_url, note_text, owner_username)
     item = {
         "source_url": source_url,
         "platform": platform or "instagram",
-        "raw_caption": note_text,
-        "hashtags": extract_hashtags(note_text),
+        "raw_caption": caption,
+        "hashtags": extract_hashtags(caption),
         "title": "",
         "owner_username": owner_username,
         "owner_name": None,
         "collection_name": None,
     }
-    enriched = _run_enrichment(item, note_text, gemini_key, places_key)
+    enriched = _run_enrichment(item, caption, gemini_key, places_key)
     update_existing_place(con, row_id, enriched)
 
     tags, embedded = [], False

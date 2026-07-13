@@ -199,6 +199,32 @@ let map, markersLayer, allPlaces = [], markerById = {};
 let activeCategories = new Set();
 let selectedCardEl = null;
 let chatResults = null; // null = no active chat search; array = active chat candidate list
+let cachedUserLocation = null; // {lat, lng} once resolved once; avoids re-prompting every message
+
+function getUserLocation() {
+  // Best-effort device location for "near me" style chat questions. Never
+  // blocks the chat request for long: permission dialogs on first use can
+  // take a while, so we cap the wait and just proceed without location if
+  // it doesn't resolve quickly. Once resolved, cache it for the session so
+  // we don't re-fetch (and re-prompt) on every message.
+  if (cachedUserLocation) return Promise.resolve(cachedUserLocation);
+  if (!("geolocation" in navigator)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 4000);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        clearTimeout(timer);
+        cachedUserLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        resolve(cachedUserLocation);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null); // permission denied / unavailable -- proceed without location
+      },
+      { timeout: 3500, maximumAge: 5 * 60 * 1000 }
+    );
+  });
+}
 
 function categoryColor(cat) {
   return CATEGORY_COLORS[cat] || CATEGORY_COLORS.other;
@@ -421,10 +447,11 @@ async function submitChat(question) {
   answerEl.textContent = "Thinking...";
 
   try {
+    const loc = await getUserLocation();
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, top_k: 8 }),
+      body: JSON.stringify({ question, top_k: 8, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null }),
     });
     if (res.status === 401) {
       window.location.href = "/login";

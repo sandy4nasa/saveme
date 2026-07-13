@@ -37,6 +37,7 @@ import re
 import sys
 import tempfile
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -445,6 +446,10 @@ def make_handler(db_path, api_key, places_key, invite_code):
                 req = self._read_json_body()
                 question = (req.get("question") or "").strip()
                 top_k = int(req.get("top_k", 6))
+                user_lat = req.get("lat")
+                user_lng = req.get("lng")
+                user_lat = float(user_lat) if user_lat is not None else None
+                user_lng = float(user_lng) if user_lng is not None else None
                 if not question:
                     self._send_json(400, {"error": "question is required"})
                     return
@@ -457,7 +462,7 @@ def make_handler(db_path, api_key, places_key, invite_code):
                     self._send_json(500, {"error": "No embedded places found. Run embed_places.py first."})
                     return
 
-                answer, ranked = run_chat_query(pool, question, api_key, top_k)
+                answer, ranked = run_chat_query(pool, question, api_key, top_k, user_lat=user_lat, user_lng=user_lng)
                 candidates = [
                     {
                         "id": place["id"],
@@ -494,6 +499,7 @@ def make_handler(db_path, api_key, places_key, invite_code):
 
                 self._send_json(200, {"answer": answer, "candidates": candidates, "nearby_recommendations": nearby})
             except Exception as e:
+                print(f"[serve_app] /api/chat failed: {e}\n{traceback.format_exc()}", file=sys.stderr)
                 self._send_json(500, {"error": str(e)})
 
         def _handle_ingest(self, user_id):
