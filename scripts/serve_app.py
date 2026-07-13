@@ -55,6 +55,7 @@ from auth_templates import LOGIN_HTML, SIGNUP_HTML  # noqa: E402
 from review_template import REVIEW_HTML  # noqa: E402
 from content_template import CONTENT_HTML  # noqa: E402
 from import_template import IMPORT_HTML  # noqa: E402
+from settings_template import SETTINGS_HTML  # noqa: E402
 from import_instagram import (  # noqa: E402
     ensure_import_jobs_schema,
     parse_export_to_items,
@@ -147,13 +148,29 @@ def make_handler(db_path, api_key, places_key, invite_code):
         def _current_user(self):
             cookies = auth.parse_cookies(self.headers.get("Cookie", ""))
             token = cookies.get(auth.SESSION_COOKIE_NAME)
-            if not token:
-                return None
-            con = duckdb.connect(db_path)
-            try:
-                return auth.get_user_from_session(con, token)
-            finally:
-                con.close()
+            if token:
+                con = duckdb.connect(db_path)
+                try:
+                    user_id = auth.get_user_from_session(con, token)
+                finally:
+                    con.close()
+                if user_id:
+                    return user_id
+
+            # No valid session cookie -- fall back to a personal API token via
+            # Authorization: Bearer <token>. This is how clients that can't
+            # hold a browser cookie authenticate (e.g. an iOS Shortcut posting
+            # to /api/ingest directly from the share sheet, since Shortcuts
+            # runs outside Safari's cookie jar).
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                api_token = auth_header[len("Bearer "):].strip()
+                con = duckdb.connect(db_path)
+                try:
+                    return auth.get_user_from_api_token(con, api_token)
+                finally:
+                    con.close()
+            return None
 
         def _require_auth_or_respond(self, is_api):
             """Returns user_id if authenticated, else sends the appropriate
@@ -269,6 +286,18 @@ def make_handler(db_path, api_key, places_key, invite_code):
                 self._send_html(200, CONTENT_HTML)
                 return
 
+            if path == "/settings":
+                user_id = self._require_auth_or_respond(is_api=False)
+                if not user_id:
+                    return
+                con = duckdb.connect(db_path)
+                try:
+                    api_token = auth.get_or_create_api_token(con, user_id)
+                finally:
+                    con.close()
+                self._send_html(200, SETTINGS_HTML.format(api_token=api_token))
+                return
+
             if path == "/api/content":
                 user_id = self._require_auth_or_respond(is_api=True)
                 if not user_id:
@@ -355,6 +384,10 @@ def make_handler(db_path, api_key, places_key, invite_code):
                 user_id = self._require_auth_or_respond(is_api=True)
                 if user_id:
                     self._handle_import_upload(user_id)
+            elif path == "/api/regenerate-token":
+                user_id = self._require_auth_or_respond(is_api=True)
+                if user_id:
+                    self._handle_regenerate_token(user_id)
             else:
                 self.send_error(404, "Not found")
 
@@ -563,6 +596,17 @@ def make_handler(db_path, api_key, places_key, invite_code):
                     return
 
                 self._send_json(200, result)
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+
+        def _handle_regenerate_token(self, user_id):
+            try:
+                con = duckdb.connect(db_path)
+                try:
+                    new_token = auth.regenerate_api_token(con, user_id)
+                finally:
+                    con.close()
+                self._send_json(200, {"token": new_token})
             except Exception as e:
                 self._send_json(500, {"error": str(e)})
 

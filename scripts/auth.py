@@ -32,6 +32,12 @@ def ensure_auth_schema(con):
         con.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR")
     if "display_name" not in existing_cols:
         con.execute("ALTER TABLE users ADD COLUMN display_name VARCHAR")
+    if "api_token" not in existing_cols:
+        # Long-lived, non-expiring personal token (distinct from session cookies)
+        # for clients that can't hold a browser cookie -- e.g. an iOS Shortcut
+        # calling /api/ingest directly from the share sheet. See
+        # IMPLEMENTATION_PLAN.md's iOS support section.
+        con.execute("ALTER TABLE users ADD COLUMN api_token VARCHAR")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -64,11 +70,42 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
 
 def create_user(con, user_id: str, password: str, display_name: str = None):
-    """Raises duckdb.ConstraintException if user_id already exists."""
+    """Raises duckdb.ConstraintException if user_id already exists.
+    Auto-generates a personal API token at signup time -- no separate
+    "generate a token" step needed later (see get_or_create_api_token)."""
     con.execute(
-        "INSERT INTO users (id, auth_provider, password_hash, display_name) VALUES (?, 'password', ?, ?)",
-        [user_id, hash_password(password), display_name or user_id],
+        "INSERT INTO users (id, auth_provider, password_hash, display_name, api_token) VALUES (?, 'password', ?, ?, ?)",
+        [user_id, hash_password(password), display_name or user_id, secrets.token_urlsafe(32)],
     )
+
+
+def get_or_create_api_token(con, user_id: str) -> str:
+    """Returns this user's personal API token, generating and persisting one
+    if they don't have one yet (covers accounts created before api_token
+    existed). Unlike session tokens, this never expires and isn't tied to a
+    browser cookie -- meant for clients like an iOS Shortcut that call
+    /api/ingest directly from the share sheet."""
+    row = con.execute("SELECT api_token FROM users WHERE id = ?", [user_id]).fetchone()
+    if row and row[0]:
+        return row[0]
+    new_token = secrets.token_urlsafe(32)
+    con.execute("UPDATE users SET api_token = ? WHERE id = ?", [new_token, user_id])
+    return new_token
+
+
+def get_user_from_api_token(con, token: str):
+    if not token:
+        return None
+    row = con.execute("SELECT id FROM users WHERE api_token = ?", [token]).fetchone()
+    return row[0] if row else None
+
+
+def regenerate_api_token(con, user_id: str) -> str:
+    """Invalidates the old token and issues a new one -- e.g. if a user
+    suspects their token leaked (shared an exported Shortcut, etc.)."""
+    new_token = secrets.token_urlsafe(32)
+    con.execute("UPDATE users SET api_token = ? WHERE id = ?", [new_token, user_id])
+    return new_token
 
 
 def authenticate(con, user_id: str, password: str) -> bool:
