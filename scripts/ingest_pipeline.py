@@ -150,9 +150,44 @@ def tag_and_embed_single(con, place_id, enriched, gemini_key):
     return tags_written, embedded
 
 
+TAGGABLE_STATUSES = {"ready", "saved_no_place"}
+
+
+def _place_result_dict(place_id, enriched):
+    return {
+        "place_id": place_id,
+        "status": enriched["enrichment_status"],
+        "name": enriched.get("place_name") or enriched.get("name"),
+        "address": enriched.get("address"),
+    }
+
+
+def _insert_and_process(con, user_id, enriched, gemini_key):
+    """Inserts one or more saved_places rows for a single enrichment result
+    and tags/embeds each that's in a taggable state. Returns a list of result
+    dicts (length 1 in the common case, or one per venue when enrichment_status
+    == 'multi_place' -- e.g. a roundup/itinerary post naming several distinct
+    real places, each gets its own row/tags/embedding/map pin)."""
+    to_insert = enriched.get("resolved_places") if enriched["enrichment_status"] == "multi_place" else [enriched]
+
+    results = []
+    for one in to_insert:
+        place_id = insert_single_place(con, user_id, one)
+        tags, embedded = [], False
+        if one["enrichment_status"] in TAGGABLE_STATUSES:
+            tags, embedded = tag_and_embed_single(con, place_id, one, gemini_key)
+        result = _place_result_dict(place_id, one)
+        result.update({"tags": tags, "tagged": bool(tags), "embedded": embedded})
+        results.append(result)
+    return results
+
+
 def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_key, owner_username=None):
     """Main entry point. Returns a dict summarizing what happened, suitable
-    for the share-target confirmation page / API response."""
+    for the share-target confirmation page / API response. The primary
+    (first) resolved place is at the top level for backward compatibility;
+    if a post named more than one distinct real place (multi_place), the
+    rest are under "additional_places"."""
     caption, owner_username = resolve_caption(source_url, note_text, owner_username)
     item = {
         "source_url": source_url,
@@ -167,21 +202,11 @@ def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_k
     }
 
     enriched = _run_enrichment(item, caption, gemini_key, places_key)
-    place_id = insert_single_place(con, user_id, enriched)
+    results = _insert_and_process(con, user_id, enriched, gemini_key)
 
-    tags, embedded = [], False
-    if enriched["enrichment_status"] == "ready":
-        tags, embedded = tag_and_embed_single(con, place_id, enriched, gemini_key)
-
-    return {
-        "place_id": place_id,
-        "status": enriched["enrichment_status"],
-        "name": enriched.get("place_name") or enriched.get("name"),
-        "address": enriched.get("address"),
-        "tags": tags,
-        "tagged": bool(tags),
-        "embedded": embedded,
-    }
+    primary, extras = results[0], results[1:]
+    primary["additional_places"] = extras
+    return primary
 
 
 def _run_enrichment(item, note_text, gemini_key, places_key):
@@ -193,12 +218,17 @@ def _run_enrichment(item, note_text, gemini_key, places_key):
     if enriched["enrichment_status"] in ("skipped_needs_llm_extraction", "no_match"):
         enriched = process_item(enriched, gemini_key, places_key)
     if enriched["enrichment_status"] == "no_place_in_caption":
-        # Last resort: the real caption exists but doesn't name a specific
-        # place -- try analyzing the actual video (signboards, spoken
-        # address, on-screen text). Best-effort; only runs if HIKER_API_KEY
-        # is configured, and never fails the whole ingestion (see
+        # Last resort: the real caption exists and plausibly names a place,
+        # but extraction/Places lookup couldn't confidently resolve it --
+        # try analyzing the actual video (signboards, spoken address,
+        # on-screen text). Best-effort; only runs if HIKER_API_KEY is
+        # configured, and never fails the whole ingestion (see
         # analyze_video_llm.py). Falls back to the caption-only result if
-        # this doesn't succeed.
+        # this doesn't succeed. NOT run for `saved_no_place` -- that status
+        # means Gemini is confident the post isn't about a place at all
+        # (recipe, DIY/craft, product post, etc.), so a video-analysis
+        # attempt would just waste a paid API call on content with nothing
+        # to find.
         video_enriched = analyze_video(enriched, gemini_key, places_key)
         if video_enriched:
             enriched = video_enriched
@@ -245,7 +275,13 @@ def retry_single_item(con, user_id, row_id, note_text, gemini_key, places_key):
     status='ready' the first time (e.g. a note without a specific place name),
     using a new/updated note supplied from the 'Needs review' screen. Updates
     the row in place instead of inserting a duplicate. Returns None if the
-    row doesn't exist or doesn't belong to user_id (ownership-checked)."""
+    row doesn't exist or doesn't belong to user_id (ownership-checked).
+
+    If the new note now resolves to multiple distinct places (multi_place --
+    e.g. the user's better note turned out to describe a multi-stop
+    itinerary), the first resolved place updates this existing row and any
+    additional ones are inserted as new rows, same as a fresh multi-place
+    share."""
     row = con.execute(
         "SELECT source_url, platform, owner_username FROM saved_places WHERE id = ? AND user_id = ?",
         [row_id, user_id],
@@ -265,21 +301,19 @@ def retry_single_item(con, user_id, row_id, note_text, gemini_key, places_key):
         "collection_name": None,
     }
     enriched = _run_enrichment(item, caption, gemini_key, places_key)
-    update_existing_place(con, row_id, enriched)
 
+    to_apply = enriched.get("resolved_places") if enriched["enrichment_status"] == "multi_place" else [enriched]
+    primary, extras = to_apply[0], to_apply[1:]
+
+    update_existing_place(con, row_id, primary)
+    con.execute("DELETE FROM place_tags WHERE place_id = ?", [row_id])
+    con.execute("DELETE FROM embeddings WHERE place_id = ?", [row_id])
     tags, embedded = [], False
-    if enriched["enrichment_status"] == "ready":
-        # Clear any stale tags/embedding from a previous attempt before re-tagging.
-        con.execute("DELETE FROM place_tags WHERE place_id = ?", [row_id])
-        con.execute("DELETE FROM embeddings WHERE place_id = ?", [row_id])
-        tags, embedded = tag_and_embed_single(con, row_id, enriched, gemini_key)
+    if primary["enrichment_status"] in TAGGABLE_STATUSES:
+        tags, embedded = tag_and_embed_single(con, row_id, primary, gemini_key)
 
-    return {
-        "place_id": row_id,
-        "status": enriched["enrichment_status"],
-        "name": enriched.get("place_name") or enriched.get("name"),
-        "address": enriched.get("address"),
-        "tags": tags,
-        "tagged": bool(tags),
-        "embedded": embedded,
-    }
+    result = _place_result_dict(row_id, primary)
+    result.update({"tags": tags, "tagged": bool(tags), "embedded": embedded})
+    result["additional_places"] = _insert_and_process(con, user_id, {"enrichment_status": "multi_place", "resolved_places": extras}, gemini_key) if extras else []
+    return result
+

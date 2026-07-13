@@ -100,7 +100,7 @@ def fetch_candidate_pool(con, user_id):
         FROM saved_places sp
         JOIN embeddings e ON e.place_id = sp.id
         LEFT JOIN place_tags pt ON pt.place_id = sp.id
-        WHERE sp.user_id = ? AND sp.status = 'ready'
+        WHERE sp.user_id = ? AND sp.status IN ('ready', 'saved_no_place')
         GROUP BY sp.id, sp.name, sp.address, sp.source_url, sp.rating, sp.user_ratings_total,
                  sp.lat, sp.lng, sp.saved_at, e.embedding
     """, [user_id]).fetchall()
@@ -146,8 +146,9 @@ def format_candidates(ranked, user_lat=None, user_lng=None):
         distance_str = ""
         if user_lat is not None and user_lng is not None and place.get("lat") is not None and place.get("lng") is not None:
             distance_str = f" | {haversine_km(user_lat, user_lng, place['lat'], place['lng']):.1f} km from you"
+        location_line = place["address"] if place.get("address") else "(saved content, no map location)"
         lines.append(
-            f"{i}. {place['name']} -- {place['address']}\n"
+            f"{i}. {place['name']} -- {location_line}\n"
             f"   tags: {tags} | {rating}{saved_at_str}{distance_str} | source: {place['source_url']}"
         )
     return "\n".join(lines)

@@ -56,23 +56,58 @@ def build_places_list(con, user_id=None):
 
 
 def list_needs_review(con, user_id):
-    """Places that were saved but never reached status='ready' (e.g. the
+    """Places that were saved but never reached a resolved status (e.g. the
     share note didn't contain a specific enough place name for our
     extraction pipeline to confidently match a Google Places result). These
     are invisible from the main map/chat (which only show 'ready' places) --
     surfaced separately in /review so the user can add a better note and
-    retry via /api/retry."""
+    retry via /api/retry.
+
+    Excludes 'saved_no_place' -- that status means the post was correctly
+    identified as having no real-world venue at all (recipe, DIY/craft,
+    product post, etc.), so it's already a resolved terminal state, not
+    something a better note could ever fix. Those live in the "Saved
+    Content" list instead (see list_saved_content below)."""
     rows = con.execute(
         """
         SELECT id, source_url, raw_caption, status, saved_at
         FROM saved_places
-        WHERE user_id = ? AND status != 'ready'
+        WHERE user_id = ? AND status NOT IN ('ready', 'saved_no_place')
         ORDER BY saved_at DESC
         """,
         [user_id],
     ).fetchall()
     cols = ["id", "source_url", "raw_caption", "status", "saved_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def list_saved_content(con, user_id):
+    """Posts saved with no real-world location (status='saved_no_place') --
+    recipes, DIY/craft, product posts, etc. Can't go on the map, but are
+    fully tagged/embedded and chat-searchable; surfaced here as a separate
+    browsable list in the app (the "Saved Content" tab)."""
+    rows = con.execute(
+        """
+        SELECT sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at,
+               list(pt.tag) FILTER (WHERE pt.tag NOT LIKE 'category:%') AS tags,
+               list(pt.tag) FILTER (WHERE pt.tag LIKE 'category:%') AS category_tags
+        FROM saved_places sp
+        LEFT JOIN place_tags pt ON pt.place_id = sp.id
+        WHERE sp.user_id = ? AND sp.status = 'saved_no_place'
+        GROUP BY sp.id, sp.name, sp.source_url, sp.raw_caption, sp.owner_username, sp.saved_at
+        ORDER BY sp.saved_at DESC
+        """,
+        [user_id],
+    ).fetchall()
+    cols = ["id", "name", "source_url", "raw_caption", "owner_username", "saved_at", "tags", "category_tags"]
+    items = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        cat_tags = d.pop("category_tags") or []
+        d["category"] = cat_tags[0].replace("category:", "") if cat_tags else "other"
+        d["tags"] = d["tags"] or []
+        items.append(d)
+    return items
 
 
 def main():

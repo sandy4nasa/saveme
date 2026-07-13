@@ -55,12 +55,24 @@ function renderResult(data) {{
   statusEl.style.display = "none";
   placeId = data.place_id;
 
+  const extraCount = (data.additional_places || []).length;
+  const extraNote = extraCount > 0
+    ? `<br><em>+${{extraCount}} more place${{extraCount > 1 ? "s" : ""}} saved from this post</em>`
+    : "";
+
   if (data.status === "ready") {{
     const tags = (data.tags || []).map(t => `<span class="tag">${{t}}</span>`).join(" ");
-    resultEl.innerHTML = `<strong>Saved: ${{data.name}}</strong><br>${{data.address || ""}}<br>${{tags}}`;
+    resultEl.innerHTML = `<strong>Saved: ${{data.name}}</strong><br>${{data.address || ""}}<br>${{tags}}${{extraNote}}`;
+    fallbackEl.style.display = "none";
+  }} else if (data.status === "saved_no_place") {{
+    // Confirmed content-only save (recipe, DIY/craft, product post, etc.) --
+    // this is a resolved, successful state, not an error: no map location,
+    // but it's tagged/searchable and browsable from the "Saved Content" tab.
+    const tags = (data.tags || []).map(t => `<span class="tag">${{t}}</span>`).join(" ");
+    resultEl.innerHTML = `<strong>Saved: ${{data.name}}</strong><br><em>No map location -- this is content, not a place. Find it under <a href="/content">Saved Content</a>.</em><br>${{tags}}${{extraNote}}`;
     fallbackEl.style.display = "none";
   }} else {{
-    resultEl.innerHTML = `Saved the link, but couldn't confidently match a place (status: ${{data.status}}).`;
+    resultEl.innerHTML = `Saved the link, but couldn't confidently match a place (status: ${{data.status}}).${{extraNote}}`;
     fallbackEl.style.display = "block";
   }}
 }}

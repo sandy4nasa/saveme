@@ -19,6 +19,7 @@ gated by an invite code (IMPLEMENTATION_PLAN.md Section 16):
   GET  /share-target            -- Android share-sheet landing page (auth required)
   POST /api/ingest               -- ingest_pipeline.ingest_single_item() for one shared post (auth required)
   GET  /review, /api/needs-review, POST /api/retry -- non-'ready' items + retry-with-better-note flow
+  GET  /content, /api/content    -- browsable list of content-only saves (no map location: recipes, DIY/craft, etc.)
   GET  /import                   -- Instagram export upload page (auth required)
   POST /api/import                -- upload a DYI export .zip, bulk-import in a background thread
   GET  /api/import/status         -- latest import job status for this user
@@ -49,9 +50,10 @@ from enrich_places import load_dotenv  # noqa: E402
 from chat_search import fetch_candidate_pool, run_chat_query  # noqa: E402
 from ingest_pipeline import ingest_single_item, retry_single_item  # noqa: E402
 from share_target_template import SHARE_TARGET_HTML  # noqa: E402
-from export_map_data import build_places_list, list_needs_review  # noqa: E402
+from export_map_data import build_places_list, list_needs_review, list_saved_content  # noqa: E402
 from auth_templates import LOGIN_HTML, SIGNUP_HTML  # noqa: E402
 from review_template import REVIEW_HTML  # noqa: E402
+from content_template import CONTENT_HTML  # noqa: E402
 from import_template import IMPORT_HTML  # noqa: E402
 from import_instagram import (  # noqa: E402
     ensure_import_jobs_schema,
@@ -258,6 +260,25 @@ def make_handler(db_path, api_key, places_key, invite_code):
                 if not user_id:
                     return
                 self._send_html(200, REVIEW_HTML)
+                return
+
+            if path == "/content":
+                user_id = self._require_auth_or_respond(is_api=False)
+                if not user_id:
+                    return
+                self._send_html(200, CONTENT_HTML)
+                return
+
+            if path == "/api/content":
+                user_id = self._require_auth_or_respond(is_api=True)
+                if not user_id:
+                    return
+                con = duckdb.connect(db_path)
+                try:
+                    items = list_saved_content(con, user_id)
+                finally:
+                    con.close()
+                self._send_json(200, items)
                 return
 
             if path == "/import":

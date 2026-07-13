@@ -54,7 +54,7 @@ RESPONSE_SCHEMA = {
     "properties": {
         "category": {
             "type": "STRING",
-            "description": "One broad category: restaurant, cafe, travel_destination, real_estate, shopping, nature, activity, or other.",
+            "description": "One broad category: restaurant, cafe, travel_destination, real_estate, shopping, nature, activity, recipe, diy_craft, or other. Use recipe/diy_craft for content-only saves with no real-world venue (cooking posts, craft/DIY tutorials).",
         },
         "tags": {
             "type": "ARRAY",
@@ -72,14 +72,14 @@ RESPONSE_SCHEMA = {
     "required": ["category", "tags"],
 }
 
-PROMPT_TEMPLATE = """Classify this saved place for a "places I saved" app so a user can later filter/search by tags.
+PROMPT_TEMPLATE = """Classify this saved place/post for a "places I saved" app so a user can later filter/search by tags.
 
 Place name: {name}
 Google Places categories: {place_types}
 Caption: \"\"\"{caption}\"\"\"
 Hashtags: {hashtags}
 
-Pick ONE broad category (restaurant, cafe, travel_destination, real_estate, shopping, nature, activity, or other), and 3-6 short kebab-case descriptive tags with a confidence score each (0-1), grounded strictly in what the caption/categories actually say -- don't guess facts not present. Prefer reusing tags from this suggested list where they fit: {suggested_tags}. You may add other tags not in the list if clearly warranted."""
+Pick ONE broad category (restaurant, cafe, travel_destination, real_estate, shopping, nature, activity, recipe, diy_craft, or other), and 3-6 short kebab-case descriptive tags with a confidence score each (0-1), grounded strictly in what the caption/categories actually say -- don't guess facts not present. If this is content with no real-world venue (a cooking/recipe post or a DIY/craft tutorial, with no Google Places categories given), use category "recipe" or "diy_craft" as appropriate rather than forcing it into a place-type category. Prefer reusing tags from this suggested list where they fit: {suggested_tags}. You may add other tags not in the list if clearly warranted."""
 
 
 def build_request(place):
