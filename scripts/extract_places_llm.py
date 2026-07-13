@@ -96,7 +96,10 @@ If the caption is NOT about any specific real-world place at all -- for example 
 
 def build_gemini_request(item):
     prompt = PROMPT_TEMPLATE.format(
-        caption=(item.get("raw_caption") or "")[:1500],
+        # 4000 chars (was 1500) -- YouTube transcript-augmented captions can
+        # run to several thousand characters; 1500 was cutting off the part
+        # of the transcript most likely to mention a venue name.
+        caption=(item.get("raw_caption") or "")[:4000],
         hashtags=", ".join(item.get("hashtags", [])[:10]),
         owner_name=item.get("owner_name") or "unknown",
         owner_username=item.get("owner_username") or "unknown",

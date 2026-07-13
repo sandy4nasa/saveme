@@ -2,30 +2,41 @@
 """
 analyze_video_llm.py
 
-Last-resort place extraction fallback: analyzes the actual Reel video
-(visuals, on-screen text, and audio) via Gemini's multimodal video
-understanding, for items where even the real Instagram caption doesn't
-name a specific place (enrichment_status == "no_place_in_caption" after
-extract_places_llm.process_item()).
+Last-resort place extraction fallback: analyzes the actual video (visuals,
+on-screen text, and audio) via Gemini's multimodal video understanding, for
+items where even the real caption/description doesn't name a specific place
+(enrichment_status == "no_place_in_caption" after
+extract_places_llm.process_item(), and -- for YouTube -- after the free
+transcript-text fallback in fetch_youtube_transcript.py has also failed to
+resolve it).
 
-Pipeline:
-  fetch_instagram_video.fetch_video_info()  [HikerAPI: get CDN video URL]
-    -> download_video()                     [download the MP4]
+Pipeline (platform-dependent video-fetch step, everything downstream shared):
+  Instagram: fetch_instagram_video.fetch_video_info()  [HikerAPI: get CDN video URL]
+             -> download_video()                       [download the MP4]
+  YouTube:   fetch_youtube_video.download_video()       [yt-dlp, no auth needed]
+  both then:
     -> Gemini File API upload + poll ACTIVE  [make it referenceable]
     -> generateContent (video understanding) [ask for place name/city]
     -> extract_places_llm.enrich_with_places()  [same Google Places lookup]
 
-This is opt-in and fully best-effort: if HIKER_API_KEY is not configured,
-or the video can't be fetched/downloaded/uploaded/analyzed for any reason,
-analyze_video() returns None and the caller should keep whatever
+This is opt-in and fully best-effort: for Instagram, if HIKER_API_KEY is not
+configured, or the video can't be fetched/downloaded/uploaded/analyzed for
+any reason, analyze_video() returns None and the caller should keep whatever
 caption-based result it already had rather than fail the whole ingestion.
+YouTube needs no paid API key at all -- yt-dlp downloads public videos
+directly -- but is equally best-effort (private/age-restricted videos,
+network errors, or a future YouTube anti-bot change all degrade to None the
+same way).
 
-Cost note: each attempt costs 1 HikerAPI request (~$0.0006-$0.02/request
-depending on plan tier) plus a Gemini video-understanding call. This is
-only ever triggered for items where caption-based extraction already came
-up empty -- never run on every share (see ingest_pipeline._run_enrichment).
+Cost note: each Instagram attempt costs 1 HikerAPI request
+(~$0.0006-$0.02/request depending on plan tier) plus a Gemini
+video-understanding call; each YouTube attempt costs only the Gemini call
+(no paid video-fetch API). Only ever triggered for items where caption-based
+extraction already came up empty -- never run on every share (see
+ingest_pipeline._run_enrichment).
 
-See IMPLEMENTATION_PLAN.md Section 20 for the full design/tradeoffs.
+See IMPLEMENTATION_PLAN.md Section 20 (Instagram) and Section 23 (YouTube)
+for the full design/tradeoffs.
 """
 
 import json
@@ -39,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_instagram_video import fetch_video_info, download_video  # noqa: E402
+from fetch_youtube_video import download_video as download_youtube_video  # noqa: E402
 from extract_places_llm import enrich_with_places  # noqa: E402
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
@@ -156,21 +168,31 @@ def analyze_video(item, gemini_key, places_key, hiker_api_key=None):
     (same shape as extract_places_llm.process_item()) on success, or None
     if the video couldn't be fetched/analyzed for any reason -- the caller
     should keep whatever caption-based result it already had in that case.
-    """
-    hiker_api_key = hiker_api_key or os.environ.get("HIKER_API_KEY")
-    if not hiker_api_key:
-        return None
 
-    source_url = item.get("source_url")
-    video_info = fetch_video_info(source_url, hiker_api_key)
-    if not video_info:
-        return None
+    Dispatches by platform: Instagram videos require the paid HikerAPI
+    (fetch_instagram_video.py -- yt-dlp fails outright without an
+    authenticated Instagram session). YouTube videos download directly via
+    yt-dlp (fetch_youtube_video.py) with no paid API and no auth wall.
+    """
+    source_url = item.get("source_url") or ""
+    platform = item.get("platform") or ("instagram" if "instagram.com" in source_url else "youtube" if ("youtube.com" in source_url or "youtu.be" in source_url) else None)
 
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
-        if not download_video(video_info["video_url"], tmp_path):
+
+        if platform == "instagram":
+            hiker_api_key = hiker_api_key or os.environ.get("HIKER_API_KEY")
+            if not hiker_api_key:
+                return None
+            video_info = fetch_video_info(source_url, hiker_api_key)
+            if not video_info or not download_video(video_info["video_url"], tmp_path):
+                return None
+        elif platform == "youtube":
+            if not download_youtube_video(source_url, tmp_path):
+                return None
+        else:
             return None
 
         file_uri, mime_type = _upload_to_gemini(tmp_path, gemini_key)

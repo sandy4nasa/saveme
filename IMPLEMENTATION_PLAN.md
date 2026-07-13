@@ -701,10 +701,38 @@ Recommends similar places near a given saved place — both from the user's own 
 - **Verified end-to-end** against real public videos via a scratch copy of the production DB: a restaurant-review video ("Barstool Pizza Review - L & B Spumoni Gardens") correctly resolved to `status=ready`, `platform=youtube`, the real Brooklyn address, tagged `category:restaurant` + `pizza`/`italian-food`/`brooklyn`, and embedded -- with zero changes to the extraction code itself. A music video with no venue (Rick Astley) correctly resolved to `saved_no_place` with a sensible title and `music-video` tag, exactly mirroring the Instagram content-only-post behavior from Section 22.
 - Deployed to production (`fetch_youtube_metadata.py` new, `ingest_pipeline.py` updated; `saveme.service` restarted; site verified `200 OK`).
 
-**Not yet built (explicitly out of scope for this pass)**:
-- Transcript-based extraction for videos where title+description doesn't name the place but spoken narration does (`youtube-transcript-api`, free, no auth wall).
-- `yt-dlp`-based video-content-analysis fallback (equivalent to Section 20's Instagram video analysis, but free -- no HikerAPI-style paid API needed since `yt-dlp` works without cookies for most public YouTube videos).
-- Facebook support (see Section 21's feasibility note: harder, needs a paid third-party scraper like Apify).
+**Not yet built (explicitly out of scope for this pass)**: transcript-based extraction and a free `yt-dlp` video-analysis fallback -- see Section 24, both built in the very next pass. Facebook support (see Section 21's feasibility note: harder, needs a paid third-party scraper like Apify) still not started as of Section 24.
+
+---
+
+## 24. YouTube Fallback Tiers: Free Transcript Extraction + yt-dlp Video Analysis — Implemented
+
+**Goal**: close the two gaps called out at the end of Section 23 -- for YouTube items that don't resolve from title+description alone, try (1) the free transcript text, then (2) full video-visual/audio analysis via Gemini, mirroring Instagram's Section 20 fallback but without any paid API.
+
+**New modules**:
+- **`scripts/fetch_youtube_transcript.py`** (new): `fetch_transcript(video_id, max_chars=6000)` uses `youtube-transcript-api` v1.2.4's instance-method API (`YouTubeTranscriptApi().fetch(video_id)`) to pull auto-generated or manual captions, joins the snippet text, truncates to `max_chars`, and returns `None` on any failure (transcripts disabled, video unavailable, network error) -- same best-effort contract as every other fetcher in this pipeline. No API key needed.
+- **`scripts/fetch_youtube_video.py`** (new): `download_video(source_url, dest_path, max_bytes, max_duration)` uses `yt-dlp` to download a low-to-mid-res MP4 directly to `dest_path`. Two non-obvious fixes were required to get this working reliably in 2025-era YouTube:
+  1. **PO-token/SABR bypass**: YouTube's default `web` client now forces "SABR streaming" for most formats, which strips direct URLs and requires a Proof-of-Origin token yt-dlp doesn't have by default (`ERROR: The page needs to be reloaded` / empty format lists). Fix: `"extractor_args": {"youtube": {"player_client": ["android"]}}` makes yt-dlp use the Android client's API responses instead, which still expose working direct URLs (sometimes only a lower-res progressive format, which is fine for this use case).
+  2. **Pre-created empty destination file silently no-ops the download**: callers create `dest_path` via `tempfile.NamedTemporaryFile(delete=False)`, which pre-creates a real (0-byte) file at that path *before* yt-dlp ever runs. yt-dlp's default behavior treats an existing file at the target path as "already downloaded" and skips re-fetching it -- silently reporting `100% of 0.00B` and leaving the file empty, with no exception raised. Fix: `"overwrites": True` in `ydl_opts` forces yt-dlp to always (re)download into that path regardless of what's already there. This was the root cause of a confusing bug where identical code succeeded when tested via `python3 -c "..."` (using a plain literal path that didn't pre-exist) but failed when run through the module's own callers (which always use `NamedTemporaryFile`).
+  - No cookies/login required -- unlike Instagram, `yt-dlp` can fetch public YouTube video bytes directly, so this fallback needs no paid API key at all (unlike Section 20's HikerAPI dependency for Instagram).
+
+**Pipeline changes**:
+- **`scripts/ingest_pipeline.py`**:
+  - New `_try_youtube_transcript(item, gemini_key, places_key)`: extracts the video ID, fetches the transcript, appends it to `raw_caption` as `"...\n\nTranscript:\n{transcript}"`, and re-runs the existing `extract_places_llm.process_item()` on the augmented item -- reusing the exact same Gemini extraction/Places-resolution logic already proven for captions, just with richer input text. Returns `None` (caller keeps the prior result) unless the re-run resolves to `ready` or `multi_place`.
+  - `_run_enrichment()`: for items still at `no_place_in_caption` (ambiguous, not the terminal `saved_no_place`), now tries tiers in order for YouTube: (1) transcript fallback, then (2) if still unresolved, the existing video-analysis fallback (`analyze_video()`, now platform-aware -- see below). Instagram items skip straight to tier (2), unchanged from Section 20.
+- **`scripts/analyze_video_llm.py`**: `analyze_video()` now dispatches by platform instead of being Instagram-only: Instagram videos still go through `fetch_instagram_video.py` (requires `HIKER_API_KEY`), YouTube videos go through the new `fetch_youtube_video.download_video()` (no key needed). Everything downstream (Gemini File API upload, video-understanding prompt, Places enrichment) is shared and platform-agnostic, unchanged.
+- **`scripts/extract_places_llm.py`**: raised the `raw_caption` truncation limit from 1500 to 4000 characters -- transcripts can run to several thousand characters and 1500 was cutting off content before the part most likely to mention a venue.
+
+**Verified end-to-end** against a real public video ("Barstool Pizza Review - L & B Spumoni Gardens") via a scratch copy of the production DB and standalone function calls:
+- Transcript tier: with a deliberately generic/sparse caption forced in the test (simulating a video whose real description doesn't name a place), the transcript tier correctly recovered **three** distinct venues from garbled auto-caption text ("L&B spani Gardens", "defaria" for "Di Fara Pizza") -- Gemini's extraction was robust to the transcription errors and all three resolved to real Google Places entries via `multi_place`.
+- Video-analysis tier: called directly (bypassing the transcript tier) on the same video, `yt-dlp` downloaded a 20MB clip via the Android-client workaround and the `overwrites` fix, Gemini's video understanding correctly identified the restaurant from on-screen signage, and it resolved to `status=ready` with the correct address.
+- Regression check: the music video from Section 23 (no venue at all) still correctly short-circuits to `saved_no_place` via the full `ingest_single_item()` path without wasting any transcript/video-analysis calls (confirmed status/tags/embedding all correct in the DB).
+
+**Deployed to production**: installed `yt-dlp` and `youtube-transcript-api` on `/opt/saveme_venv`, rsynced the 4 changed/new files, restarted `saveme.service`, verified `200 OK` and clean restart in `journalctl`.
+
+**Known risk / caveat**: this entire video-download area is an actively-evolving cat-and-mouse space -- YouTube has changed its anti-bot enforcement multiple times in 2025 alone, and the `player_client: ["android"]` workaround could stop working with a future YouTube-side change. If that happens, the transcript tier (which doesn't depend on `yt-dlp` at all) still provides a free fallback signal, and the pipeline degrades gracefully to `no_place_in_caption`/`saved_no_place` rather than failing.
+
+**Not yet built**: Facebook support (Section 21's feasibility note still stands -- needs a paid third-party scraper like Apify, no free/official path like YouTube's).
 
 ---
 

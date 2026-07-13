@@ -37,7 +37,8 @@ from extract_places_llm import process_item  # noqa: E402
 from tag_places_llm import call_gemini as call_gemini_tag  # noqa: E402
 from embed_places import call_embed, build_embedding_text  # noqa: E402
 from fetch_instagram_caption import fetch_caption  # noqa: E402
-from fetch_youtube_metadata import fetch_metadata as fetch_youtube_metadata  # noqa: E402
+from fetch_youtube_metadata import fetch_metadata as fetch_youtube_metadata, extract_video_id  # noqa: E402
+from fetch_youtube_transcript import fetch_transcript  # noqa: E402
 from analyze_video_llm import analyze_video  # noqa: E402
 
 HASHTAG_RE = re.compile(r"#(\w+)")
@@ -235,6 +236,33 @@ def ingest_single_item(con, user_id, source_url, note_text, gemini_key, places_k
     return primary
 
 
+def _try_youtube_transcript(item, gemini_key, places_key):
+    """Free fallback tier for YouTube items only, tried before the paid-ish
+    Gemini video-analysis tier: fetch the auto/manual transcript text via
+    youtube-transcript-api, append it to the caption (title+description),
+    and re-run the same Gemini extraction used for captions. Transcripts
+    often mention a venue name out loud even when the description doesn't
+    (e.g. "we're here at L&B Spumoni Gardens in Brooklyn"). Returns an
+    enriched item dict on success, or None if no transcript is available,
+    it's not a YouTube URL, or extraction still doesn't find a place --
+    the caller keeps the prior caption-only result in that case."""
+    source_url = item.get("source_url") or ""
+    video_id = extract_video_id(source_url)
+    if not video_id:
+        return None
+    transcript = fetch_transcript(video_id)
+    if not transcript:
+        return None
+
+    augmented_caption = f"{item.get('raw_caption') or ''}\n\nTranscript:\n{transcript}".strip()
+    augmented_item = {**item, "raw_caption": augmented_caption}
+    enriched = process_item(augmented_item, gemini_key, places_key)
+    if enriched["enrichment_status"] in ("ready", "multi_place"):
+        enriched["enrichment_query_source"] = "youtube_transcript"
+        return enriched
+    return None
+
+
 def _run_enrichment(item, note_text, gemini_key, places_key):
     """Shared by ingest_single_item (new share) and retry_single_item
     (re-running an existing 'needs review' item with a better note)."""
@@ -244,20 +272,23 @@ def _run_enrichment(item, note_text, gemini_key, places_key):
     if enriched["enrichment_status"] in ("skipped_needs_llm_extraction", "no_match"):
         enriched = process_item(enriched, gemini_key, places_key)
     if enriched["enrichment_status"] == "no_place_in_caption":
-        # Last resort: the real caption exists and plausibly names a place,
-        # but extraction/Places lookup couldn't confidently resolve it --
-        # try analyzing the actual video (signboards, spoken address,
-        # on-screen text). Best-effort; only runs if HIKER_API_KEY is
-        # configured, and never fails the whole ingestion (see
-        # analyze_video_llm.py). Falls back to the caption-only result if
-        # this doesn't succeed. NOT run for `saved_no_place` -- that status
-        # means Gemini is confident the post isn't about a place at all
-        # (recipe, DIY/craft, product post, etc.), so a video-analysis
-        # attempt would just waste a paid API call on content with nothing
-        # to find.
-        video_enriched = analyze_video(enriched, gemini_key, places_key)
-        if video_enriched:
-            enriched = video_enriched
+        # Last resort tiers, cheapest first. Only for `no_place_in_caption`
+        # (ambiguous) -- never for `saved_no_place`, where Gemini is already
+        # confident the post isn't about a place at all (recipe, DIY/craft,
+        # product post, etc.), so spending extra API calls would be wasted.
+        if item.get("platform") == "youtube":
+            transcript_enriched = _try_youtube_transcript(enriched, gemini_key, places_key)
+            if transcript_enriched:
+                enriched = transcript_enriched
+        if enriched["enrichment_status"] == "no_place_in_caption":
+            # Analyze the actual video (signboards, spoken address, on-screen
+            # text). Best-effort; for Instagram only runs if HIKER_API_KEY is
+            # configured, for YouTube runs unconditionally (no key needed);
+            # never fails the whole ingestion (see analyze_video_llm.py).
+            # Falls back to the prior result if this doesn't succeed either.
+            video_enriched = analyze_video(enriched, gemini_key, places_key)
+            if video_enriched:
+                enriched = video_enriched
     return enriched
 
 
