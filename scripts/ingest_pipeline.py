@@ -363,9 +363,15 @@ def retry_single_item(con, user_id, row_id, note_text, gemini_key, places_key):
     to_apply = enriched.get("resolved_places") if enriched["enrichment_status"] == "multi_place" else [enriched]
     primary, extras = to_apply[0], to_apply[1:]
 
-    update_existing_place(con, row_id, primary)
+    # Clear old tags/embeddings *before* updating the row -- if this row was
+    # already tagged/embedded from a previous successful enrichment (e.g. a
+    # user-triggered re-check on a 'ready' place, not just a first-time
+    # 'needs_manual_caption' retry), place_tags/embeddings hold a foreign key
+    # on place_id and DuckDB blocks the UPDATE until those references are
+    # gone.
     con.execute("DELETE FROM place_tags WHERE place_id = ?", [row_id])
     con.execute("DELETE FROM embeddings WHERE place_id = ?", [row_id])
+    update_existing_place(con, row_id, primary)
     tags, embedded = [], False
     if primary["enrichment_status"] in TAGGABLE_STATUSES:
         tags, embedded = tag_and_embed_single(con, row_id, primary, gemini_key)

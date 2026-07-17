@@ -66,6 +66,12 @@ MAX_QUERY_LEN = 70
 # Generic descriptor phrases that sometimes follow a 📍 marker but aren't an
 # actual place name (common in real-estate/listing-style captions). These
 # get routed to the LLM-extraction fallback instead of wasting a Places call.
+# A candidate ending in a bare ":" (e.g. "📍 Venues:\n\nReal Venue A\n\nReal
+# Venue B") is also rejected below -- that's a label/header for a list of
+# places on the following lines, not a place name itself, and the regex only
+# captures up to the first newline so it would otherwise wrongly search
+# Places for the literal word "Venues:". Routing to the LLM fallback lets
+# the multi-place extraction correctly pick out each real venue instead.
 NON_PLACE_PHRASES = (
     "location in video",
     "location:",
@@ -90,7 +96,8 @@ def extract_candidate_query(item):
         candidate = candidate[:MAX_QUERY_LEN].strip()
 
         if len(candidate) >= 3 and candidate.lower() not in NON_PLACE_PHRASES \
-                and not any(p in candidate.lower() for p in NON_PLACE_PHRASES):
+                and not any(p in candidate.lower() for p in NON_PLACE_PHRASES) \
+                and not candidate.rstrip().endswith(":"):
             return candidate, "location_marker"
 
     title = (item.get("title") or "").strip()
