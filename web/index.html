@@ -88,6 +88,7 @@
   .place-card .meta { font-size: 11px; color: var(--muted); }
   .place-card .tags { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
   .tag-pill { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #2a2e38; color: var(--muted); }
+  .no-location { color: var(--muted); font-style: italic; }
   #map { flex: 1; }
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); }
   .leaflet-popup-tip { background: var(--panel); }
@@ -417,6 +418,10 @@ function renderMarkers(places) {
   markersLayer.clearLayers();
   markerById = {};
   places.forEach(p => {
+    // Chat results can include content-only posts (no mappable place --
+    // e.g. a cooking/DIY video) which have null lat/lng. Those can't get a
+    // map marker; they still show up in the list below.
+    if (p.lat == null || p.lng == null) return;
     const marker = L.marker([p.lat, p.lng], { icon: makeIcon(p.category) });
     marker.bindPopup(popupHtml(p));
     marker.on("click", () => { highlightCard(p.id); collapseSheetOnMobile(); });
@@ -429,22 +434,28 @@ function renderList(places) {
   const list = document.getElementById("place-list");
   list.innerHTML = "";
   places.forEach(p => {
+    const hasLocation = p.lat != null && p.lng != null;
     const card = document.createElement("div");
     card.className = "place-card";
     card.dataset.id = p.id;
     const tags = (p.tags || []).slice(0, 4).map(t => `<span class="tag-pill">${t}</span>`).join(" ");
     const rating = p.rating ? ` · ★${p.rating.toFixed(1)}` : "";
+    const noLocationTag = hasLocation ? "" : ` · <span class="no-location">no map location</span>`;
     card.innerHTML = `
       <div class="name"><span class="platform-badge" title="${platformLabel(p.platform)}">${platformIcon(p.platform)}</span>${p.name}</div>
-      <div class="meta">${p.category.replace(/_/g, " ")}${rating}</div>
+      <div class="meta">${p.category.replace(/_/g, " ")}${rating}${noLocationTag}</div>
       <div class="tags">${tags}</div>
     `;
     card.addEventListener("click", () => {
-      map.setView([p.lat, p.lng], 15);
-      const marker = markerById[p.id];
-      if (marker) marker.openPopup();
+      if (hasLocation) {
+        map.setView([p.lat, p.lng], 15);
+        const marker = markerById[p.id];
+        if (marker) marker.openPopup();
+        collapseSheetOnMobile();
+      } else if (p.source_url) {
+        window.open(p.source_url, "_blank");
+      }
       highlightCard(p.id);
-      collapseSheetOnMobile();
     });
     list.appendChild(card);
   });
@@ -533,8 +544,11 @@ async function submitChat(question) {
     applyFilters();
 
     if (chatResults.length) {
-      const bounds = L.latLngBounds(chatResults.map(p => [p.lat, p.lng]));
-      map.fitBounds(bounds, { padding: [40, 40] });
+      const withCoords = chatResults.filter(p => p.lat != null && p.lng != null);
+      if (withCoords.length) {
+        const bounds = L.latLngBounds(withCoords.map(p => [p.lat, p.lng]));
+        map.fitBounds(bounds, { padding: [40, 40] });
+      }
     }
   } catch (err) {
     answerEl.className = "";
